@@ -87,7 +87,7 @@ test('HnHost 每日领取金币', async () => {
     let points = '';
 
     try {
-        // 第一步：验证出口 IP（和别人一样）
+        // 1. 验证出口 IP（和别人一样）
         console.log('🌐 验证出口 IP...');
         try {
             const res = await page.goto('https://api.ipify.org?format=json', { timeout: 15000 });
@@ -103,7 +103,7 @@ test('HnHost 每日领取金币', async () => {
 
         await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // Token 注入（关键）
+        // Token 注入（最重要部分）
         await page.evaluate((token) => {
             const timer = setInterval(() => {
                 try {
@@ -118,8 +118,10 @@ test('HnHost 每日领取金币', async () => {
         await page.waitForTimeout(12000);
 
         console.log('⏳ 等待 OAuth2 回调...');
+
+        // 关键：等待别人日志中的回调地址
         await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 40000 }).catch(() => {
-            console.log('⚠️ 未检测到 code 参数');
+            console.log('⚠️ 未检测到 code 参数，尝试强制跳转');
         });
 
         console.log('✅ 当前 URL:', page.url());
