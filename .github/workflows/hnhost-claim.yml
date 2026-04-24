@@ -2,7 +2,7 @@ name: 🎮 HnHost 每日领取金币
 
 on:
   schedule:
-    - cron: '0 1 * * *'
+    - cron: '0 1 * * *'      # 每天 UTC 01:00 = 北京时间 09:00
   workflow_dispatch:
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/HnHost-Claim-Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          path: hnhost-claim          # ← 关键修复
+          path: hnhost-claim
 
       - name: 🟢 安装 Node.js
         uses: actions/setup-node@v4
@@ -26,7 +26,7 @@ jobs:
           cache: 'npm'
 
       - name: 📦 安装依赖
-        working-directory: ./hnhost-claim   # ← 关键修复
+        working-directory: ./hnhost-claim
         run: npm ci
 
       - name: 🌐 安装 Playwright 浏览器
@@ -34,20 +34,27 @@ jobs:
         run: npx playwright install chromium --with-deps
 
       - name: 🛡️ 启动 GOST 代理转发
-        if: ${{ secrets.GOST_PROXY != '' }}
+        if: ${{ secrets.GOST_PROXY != '' && secrets.GOST_PROXY != null }}
         env:
           GOST_PROXY: ${{ secrets.GOST_PROXY }}
         run: |
-          echo "🚀 启动 GOST 代理..."
+          echo "🚀 正在启动 GOST 代理..."
           VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          echo "📦 GOST 版本: $VERSION"
+          
           wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
           tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
           chmod +x gost
+          
           nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
-          sleep 5
+          sleep 6
+          
+          echo "✅ GOST 启动完成，测试出口 IP..."
+          curl -s -x http://127.0.0.1:8080 https://api.ipify.org || echo "⚠️ IP 测试失败"
+          echo "──────────────────────────────────"
 
       - name: 🚀 运行领币脚本
-        working-directory: ./hnhost-claim     # ← 加上这一行
+        working-directory: ./hnhost-claim
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           SESSION_ID:    ${{ secrets.SESSION_ID }}
@@ -60,5 +67,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: failure-screenshots
-          path: hnhost-claim/test-results/     # 注意路径
+          path: hnhost-claim/test-results/
           retention-days: 7
