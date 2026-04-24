@@ -27,7 +27,7 @@ function escapeHtml(text) {
         .replace(/'/g, '&#039;');
 }
 
-// 轻量 Cloudflare 处理（当前基本用不到，但保留防未来变化）
+// 轻量 Cloudflare 处理
 async function handleCloudflare(page) {
     try {
         const cf = page.frameLocator('iframe[src*="cloudflare"], iframe[src*="turnstile"]');
@@ -40,7 +40,7 @@ async function handleCloudflare(page) {
     } catch {}
 }
 
-// TG 美观推送
+// TG 美观报告推送
 async function sendTGReport(page, status, points = '') {
     if (!TG_CHAT_ID || !TG_TOKEN) {
         console.log('⚠️ TG_BOT 未配置，跳过推送');
@@ -52,7 +52,9 @@ async function sendTGReport(page, status, points = '') {
         if (!page.isClosed()) {
             await page.screenshot({ path: photoPath, fullPage: false });
         }
-    } catch (e) {}
+    } catch (e) {
+        console.log('截图失败:', e.message);
+    }
 
     const report = [
         `🪙 <b>HnHost 每日领取金币报告</b>`,
@@ -95,7 +97,7 @@ test('HnHost 每日领取金币', async () => {
     }
 
     const proxyConfig = process.env.GOST_PROXY ? { server: process.env.GOST_PROXY } : undefined;
-    if (proxyConfig) console.log(`🛡️ 使用 GOST 代理`);
+    if (proxyConfig) console.log('🛡️ 使用 GOST 代理');
 
     const browser = await chromium.launch({
         headless: true,
@@ -105,8 +107,8 @@ test('HnHost 每日领取金币', async () => {
     const page = await browser.newPage();
     page.setDefaultTimeout(60000);
 
-    let finalStatus = '执行中';
-    let gained = '';
+    let status = '执行中';
+    let points = '';
 
     try {
         console.log('🌐 跳转到 HnHost 领取页面...');
@@ -116,36 +118,42 @@ test('HnHost 每日领取金币', async () => {
         });
 
         await handleCloudflare(page);
-        await page.waitForTimeout(5000);
+        await page.waitForTimeout(3000);
 
         console.log('🪙 检测领取奖励按钮...');
 
-        const claimButton = page.locator('text=领取每日登录奖励,领取奖励').first();
-        const alreadyClaimed = page.locator('text=已领取每日奖励').first();
+        // 根据你最新截图精确匹配按钮
+        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
+        const alreadyClaimed = page.locator('text=已领取每日奖励,已领取').first();
 
-        if (await alreadyClaimed.isVisible({ timeout: 5000 }).catch(() => false)) {
-            finalStatus = '今日已领取每日奖励';
-            console.log('✅ ' + finalStatus);
-        } else if (await claimButton.isVisible({ timeout: 10000 }).catch(() => false)) {
-            console.log('🔘 点击领取按钮...');
-            await claimButton.click();
-            await page.waitForTimeout(10000);
+        if (await alreadyClaimed.isVisible({ timeout: 6000 }).catch(() => false)) {
+            status = '今日已领取每日奖励';
+            console.log('✅ ' + status);
+        } 
+        else if (await claimButton.isVisible({ timeout: 10000 }).catch(() => false)) {
+            console.log('🔘 找到「领取奖励」按钮，正在点击...');
+            await claimButton.scrollIntoViewIfNeeded();
+            await claimButton.click({ delay: 800 });
+            await page.waitForTimeout(10000);   // 等待领取完成和页面刷新
 
-            // 尝试捕获获得金额
-            gained = await page.locator('text=获得|HNRC|金币|积分').first().innerText().catch(() => '+60 HNRC');
-            finalStatus = `领取成功 ${gained}`;
-            console.log('🎉 ' + finalStatus);
-        } else {
-            finalStatus = '未找到领取按钮（可能今日已领取或页面变化）';
-            console.log('⚠️ ' + finalStatus);
+            // 尝试捕获领取结果
+            points = await page.locator('text=获得|成功|HN Points|HNRC|金币|积分').first().innerText().catch(() => '+10 HN Points');
+            status = `领取成功 ${points}`;
+            console.log('🎉 ' + status);
+        } 
+        else {
+            status = '未找到「领取奖励」按钮（可能今日已领取或页面结构变化）';
+            console.log('⚠️ ' + status);
         }
 
-        await sendTGReport(page, finalStatus, gained);
+        await sendTGReport(page, status, points);
 
     } catch (error) {
-        finalStatus = `执行失败: ${error.message}`;
-        console.log('❌ ' + finalStatus);
-        try { await sendTGReport(page, finalStatus); } catch {}
+        status = `执行失败: ${error.message}`;
+        console.log('❌ ' + status);
+        try {
+            await sendTGReport(page, status);
+        } catch {}
         throw error;
     } finally {
         await browser.close();
