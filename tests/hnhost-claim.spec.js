@@ -6,7 +6,7 @@ const fs = require('fs');
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
-const TIMEOUT = 90000;
+const TIMEOUT = 120000;
 
 function nowStr() {
     return new Date().toLocaleString('zh-CN', {
@@ -27,7 +27,6 @@ function escapeHtml(text) {
         .replace(/'/g, '&#039;');
 }
 
-// 轻量 Cloudflare 处理
 async function handleCloudflare(page) {
     try {
         const cf = page.frameLocator('iframe[src*="cloudflare"], iframe[src*="turnstile"]');
@@ -40,21 +39,13 @@ async function handleCloudflare(page) {
     } catch {}
 }
 
-// TG 美观报告推送
 async function sendTGReport(page, status, points = '') {
-    if (!TG_CHAT_ID || !TG_TOKEN) {
-        console.log('⚠️ TG_BOT 未配置，跳过推送');
-        return;
-    }
+    if (!TG_CHAT_ID || !TG_TOKEN) return;
 
     const photoPath = `hnhost_claim_${Date.now()}.png`;
     try {
-        if (!page.isClosed()) {
-            await page.screenshot({ path: photoPath, fullPage: false });
-        }
-    } catch (e) {
-        console.log('截图失败:', e.message);
-    }
+        if (!page.isClosed()) await page.screenshot({ path: photoPath, fullPage: true });
+    } catch {}
 
     const report = [
         `🪙 <b>HnHost 每日领取金币报告</b>`,
@@ -92,18 +83,12 @@ async function sendTGReport(page, status, points = '') {
 test('HnHost 每日领取金币', async () => {
     test.setTimeout(TIMEOUT);
 
-    if (!DISCORD_TOKEN) {
-        throw new Error('❌ DISCORD_TOKEN 未在 Secrets 中配置');
-    }
+    if (!DISCORD_TOKEN) throw new Error('❌ DISCORD_TOKEN 未配置');
 
     const proxyConfig = process.env.GOST_PROXY ? { server: process.env.GOST_PROXY } : undefined;
     if (proxyConfig) console.log('🛡️ 使用 GOST 代理');
 
-    const browser = await chromium.launch({
-        headless: true,
-        proxy: proxyConfig
-    });
-
+    const browser = await chromium.launch({ headless: true, proxy: proxyConfig });
     const page = await browser.newPage();
     page.setDefaultTimeout(60000);
 
@@ -113,37 +98,54 @@ test('HnHost 每日领取金币', async () => {
     try {
         console.log('🌐 跳转到 HnHost 领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
-            waitUntil: 'domcontentloaded',
+            waitUntil: 'networkidle',
             timeout: 60000
         });
 
         await handleCloudflare(page);
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(5000);
 
-        console.log('🪙 检测领取奖励按钮...');
+        console.log('🪙 检测并尝试领取奖励...');
 
-        // 根据你最新截图精确匹配按钮
-        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
-        const alreadyClaimed = page.locator('text=已领取每日奖励,已领取').first();
+        // 加强版按钮检测 + 重试 + 滚动
+        const claimSelectors = [
+            'button:has-text("领取奖励")',
+            'text=领取奖励',
+            'button >> text=领取'
+        ];
 
-        if (await alreadyClaimed.isVisible({ timeout: 6000 }).catch(() => false)) {
-            status = '今日已领取每日奖励';
-            console.log('✅ ' + status);
-        } 
-        else if (await claimButton.isVisible({ timeout: 10000 }).catch(() => false)) {
-            console.log('🔘 找到「领取奖励」按钮，正在点击...');
-            await claimButton.scrollIntoViewIfNeeded();
-            await claimButton.click({ delay: 800 });
-            await page.waitForTimeout(10000);   // 等待领取完成和页面刷新
+        let clicked = false;
 
-            // 尝试捕获领取结果
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            console.log(`🔄 第 ${attempt} 次尝试查找按钮...`);
+
+            for (const sel of claimSelectors) {
+                const btn = page.locator(sel).first();
+                if (await btn.isVisible({ timeout: 8000 }).catch(() => false)) {
+                    console.log(`🔘 找到按钮 [${sel}]，正在点击...`);
+                    await btn.scrollIntoViewIfNeeded();
+                    await page.waitForTimeout(1000);
+                    await btn.click({ delay: 800 });
+                    clicked = true;
+                    break;
+                }
+            }
+
+            if (clicked) break;
+            await page.waitForTimeout(3000);
+        }
+
+        if (!clicked) {
+            // 保存调试截图
+            await page.screenshot({ path: 'debug-no-button.png', fullPage: true });
+            status = '未找到「领取奖励」按钮（已保存 debug-no-button.png）';
+            console.log('⚠️ ' + status);
+        } else {
+            await page.waitForTimeout(10000); // 等待领取完成
+
             points = await page.locator('text=获得|成功|HN Points|HNRC|金币|积分').first().innerText().catch(() => '+10 HN Points');
             status = `领取成功 ${points}`;
             console.log('🎉 ' + status);
-        } 
-        else {
-            status = '未找到「领取奖励」按钮（可能今日已领取或页面结构变化）';
-            console.log('⚠️ ' + status);
         }
 
         await sendTGReport(page, status, points);
@@ -151,9 +153,7 @@ test('HnHost 每日领取金币', async () => {
     } catch (error) {
         status = `执行失败: ${error.message}`;
         console.log('❌ ' + status);
-        try {
-            await sendTGReport(page, status);
-        } catch {}
+        try { await sendTGReport(page, status); } catch {}
         throw error;
     } finally {
         await browser.close();
