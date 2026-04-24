@@ -13,7 +13,7 @@ jobs:
       - name: 📥 拉取私库代码
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/HnHost-Claim-Private
+          repository: ${{ github.repository_owner }}hnhost-claim
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
 
       - name: 🟢 安装 Node.js
