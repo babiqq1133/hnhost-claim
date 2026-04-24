@@ -1,5 +1,4 @@
 name: 🎮 HnHost 每日领取金币
-
 on:
   schedule:
     - cron: '0 1 * * *'   # 每天 UTC 01:00 = 北京时间 09:00
@@ -10,52 +9,49 @@ jobs:
     name: 🪙 执行每日领币
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
       - name: 📥 拉取私库代码
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/HnHost-Claim-Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          path: .                      # 强制拉到根目录
-          persist-credentials: false
 
       - name: 🟢 安装 Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: 📦 安装依赖
-        run: npm ci                     # 使用 ci 更干净稳定
+        run: npm install
 
       - name: 🌐 安装 Playwright 浏览器
         run: npx playwright install chromium --with-deps
 
       - name: 🛡️ 启动 GOST 代理转发
-        if: ${{ secrets.GOST_PROXY != '' }}
+        if: ${{ env.GOST_PROXY != '' }}
         env:
           GOST_PROXY: ${{ secrets.GOST_PROXY }}
         run: |
-          echo "🚀 正在启动 GOST 代理..."
-          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          VERSION=$(curl -s https://api.github.com/repos/ginuerzh/gost/releases/latest \
+            | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+          echo "📦 GOST 版本: $VERSION"
           wget -q "https://github.com/ginuerzh/gost/releases/download/v${VERSION}/gost_${VERSION}_linux_amd64.tar.gz"
           tar -xzf "gost_${VERSION}_linux_amd64.tar.gz"
           chmod +x gost
           nohup ./gost -L http://:8080 -F "$GOST_PROXY" > gost.log 2>&1 &
-          sleep 5
-          echo "✅ GOST 启动完成，测试出口 IP..."
-          curl -s -x http://127.0.0.1:8080 https://api.ipify.org || echo "⚠️ IP 测试失败"
+          sleep 3
+          echo "✅ GOST 已启动，测试连通性..."
+          curl -s -x http://127.0.0.1:8080 https://api.ipify.org \
+            | sed 's/\([0-9]*\.[0-9]*\.[0-9]*\.\)[0-9]*/\1**/g'
 
       - name: 🚀 运行领币脚本
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
-          SESSION_ID:    ${{ secrets.SESSION_ID }}
           TG_BOT:        ${{ secrets.TG_BOT }}
           GOST_PROXY:    http://127.0.0.1:8080
         run: npx playwright test tests/hnhost-claim.spec.js
 
-      - name: 📸 上传失败截图（仅失败时）
+      - name: 📸 上传失败截图
         if: failure()
         uses: actions/upload-artifact@v4
         with:
