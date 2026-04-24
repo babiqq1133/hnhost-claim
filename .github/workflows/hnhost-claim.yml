@@ -34,7 +34,7 @@ jobs:
         run: npx playwright install chromium --with-deps
 
       - name: 🛡️ 启动 GOST 代理转发
-        if: ${{ secrets.GOST_PROXY != '' && secrets.GOST_PROXY != null }}
+        if: ${{ secrets.GOST_PROXY != '' }}
         env:
           GOST_PROXY: ${{ secrets.GOST_PROXY }}
         run: |
