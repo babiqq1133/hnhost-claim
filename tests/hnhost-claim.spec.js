@@ -7,14 +7,77 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const SESSION_ID = process.env.SESSION_ID;
 const GOST_PROXY = process.env.GOST_PROXY;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
+
 const TIMEOUT = 120000;
 
-function nowStr() { /* 保持不变 */ }
-function escapeHtml(text) { /* 保持不变 */ }
+function nowStr() {
+    return new Date().toLocaleString('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        hour12: false,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).replace(/\//g, '-');
+}
 
-// TG 推送函数保持不变（略）
+function escapeHtml(text) {
+    if (!text) return '';
+    return text.toString()
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
 
-// 改进的 Cloudflare 处理
+// TG 推送函数（必须保留完整）
+async function sendTGReport(page, status, points = '') {
+    if (!TG_CHAT_ID || !TG_TOKEN) {
+        console.log('⚠️ TG_BOT 未配置，跳过推送');
+        return;
+    }
+
+    const photoPath = `hnhost_claim_${Date.now()}.png`;
+    try {
+        if (!page.isClosed()) {
+            await page.screenshot({ path: photoPath, fullPage: true });
+        }
+    } catch (e) {
+        console.log('截图失败:', e.message);
+    }
+
+    const report = [
+        `🪙 <b>HnHost 每日领取金币报告</b>`,
+        `━━━━━━━━━━━━━━━━━━`,
+        `👤 账户：<b><code>${escapeHtml(DISCORD_TOKEN ? DISCORD_TOKEN.substring(0, 25) + '...' : 'N/A')}</code></b>`,
+        `📊 状态：${escapeHtml(status)}`,
+        points ? `💰 本次获得：${points}` : '',
+        `🕒 北京时间：<b><code>${escapeHtml(nowStr())}</code></b>`,
+        `━━━━━━━━━━━━━━━━━━`
+    ].filter(Boolean).join('\n');
+
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('chat_id', TG_CHAT_ID);
+    form.append('caption', report);
+    form.append('parse_mode', 'HTML');
+    if (fs.existsSync(photoPath)) form.append('photo', fs.createReadStream(photoPath));
+
+    return new Promise((resolve) => {
+        const req = https.request({
+            method: 'POST',
+            host: 'api.telegram.org',
+            path: `/bot${TG_TOKEN}/sendPhoto`,
+            headers: form.getHeaders(),
+        }, (res) => {
+            console.log(`📨 TG 推送状态: ${res.statusCode}`);
+            if (fs.existsSync(photoPath)) fs.unlinkSync(photoPath);
+            resolve();
+        });
+        req.on('error', () => resolve());
+        form.pipe(req);
+    });
+}
+
 async function handleCloudflare(page) {
     try {
         await page.waitForTimeout(3000);
@@ -54,69 +117,43 @@ test('HnHost 每日领取金币', async () => {
     try {
         console.log('🔑 使用 Discord Token 进行 OAuth2 授权...');
 
-        // === 核心修改：先构造 OAuth2 授权链接（更可靠的方式）===
-        const clientId = '977981235618021377';
-        const redirectUri = 'https://client.hnhost.net/backend/pdo/discord.php';  // 根据别人日志推测的回调地址
-        const scopes = 'identify email guilds guilds.join'; // 根据你的原链接调整
+        const authUrl = "https://discord.com/login?redirect_to=%2Foauth2%2Fauthorize%3Fscope%3Dguilds%2Bguilds.join%2Bidentify%2Bemail%26client_id%3D933437142254887052%26redirect_uri%3Dhttps%253A%252F%252Fclient.hnhost.net%252Flogin%26response_type%3Dcode%26prompt%3Dnone";
 
-        const authUrl = `https://discord.com/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scopes)}&prompt=none`;
+        await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
         await handleCloudflare(page);
         await page.waitForTimeout(8000);
 
-        // Token 注入（改进版，更稳定）
+        // Token 注入
         await page.evaluate((token) => {
-            try {
-                // 清除旧的
-                localStorage.removeItem('token');
-                // 使用 iframe 注入（兼容性更好）
-                const iframe = document.createElement('iframe');
-                document.body.appendChild(iframe);
-                iframe.contentWindow.localStorage.setItem('token', `"${token}"`);
-                // 直接在主窗口也设置
-                localStorage.setItem('token', `"${token}"`);
-            } catch (e) {
-                console.error('注入失败:', e);
-            }
+            const timer = setInterval(() => {
+                try {
+                    const iframe = document.createElement('iframe');
+                    document.body.appendChild(iframe);
+                    iframe.contentWindow.localStorage.token = `"${token}"`;
+                    localStorage.setItem('token', `"${token}"`);
+                } catch (e) {}
+            }, 50);
+            setTimeout(() => {
+                clearInterval(timer);
+                location.reload();
+            }, 4000);
         }, DISCORD_TOKEN);
 
-        await page.waitForTimeout(10000);
-        await page.reload({ waitUntil: 'networkidle' }); // 刷新让 Discord 识别 Token
+        await page.waitForTimeout(15000);
 
-        // 等待 OAuth2 回调（关键！）
-        console.log('⏳ 等待 Discord OAuth2 回调...');
-        await page.waitForURL(url => url.href.includes('client.hnhost.net') && url.href.includes('code='), { timeout: 30000 })
-            .catch(() => console.log('⚠️ 未检测到 code 参数，可能需要手动处理'));
+        console.log('🌐 跳转到领取页面...');
+        await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
+            waitUntil: 'networkidle',
+            timeout: 60000
+        });
 
-        const currentUrl = page.url();
-        console.log('📍 当前 URL：', currentUrl);
-
-        if (currentUrl.includes('code=')) {
-            console.log('✅ 成功拿到 OAuth2 code，开始建立 Session...');
-            // 如果回调已经是 hnhost 的页面，直接继续
-        } else {
-            // 如果没自动跳转，手动构造回调（备用方案）
-            // 这里需要你提供你的实际日志，我再帮你调整
-        }
-
-        // 注入 SESSION_ID（如果有）
-        if (SESSION_ID) {
-            await page.evaluate((sid) => {
-                document.cookie = `session_id=${sid}; path=/; domain=.hnhost.net`;
-                localStorage.setItem('session_id', sid);
-            }, SESSION_ID);
-        }
-
-        // 跳转到领取页面
-        console.log('🌐 进入 HnHost 主页...');
-        await page.goto('https://client.hnhost.net/index.php', { waitUntil: 'networkidle' });
         await handleCloudflare(page);
         await page.waitForTimeout(5000);
 
-        // 查找并点击领取按钮（你的原逻辑保留，但增加等待）
-        console.log('🔍 检测「领取奖励」按钮...');
-        const claimButton = page.locator('button:has-text("领取奖励"), button:has-text("領取獎勵"), button:has-text("领取"), text=/領取|领取|Claim/i').first();
+        console.log('🔍 检测领取奖励按钮...');
+
+        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励, button:has-text("领取")').first();
 
         if (await claimButton.isVisible({ timeout: 15000 }).catch(() => false)) {
             await claimButton.scrollIntoViewIfNeeded();
@@ -124,11 +161,11 @@ test('HnHost 每日领取金币', async () => {
             await claimButton.click({ delay: 1000 });
             await page.waitForTimeout(10000);
 
-            points = await page.locator('text=/获得|成功|\+10|HNRC|金币/i').first().innerText().catch(() => '+10 HNRC');
+            points = await page.locator('text=获得|成功|HN Points|HNRC|金币').first().innerText().catch(() => '+10 HN Points');
             status = `领取成功 ${points}`;
             console.log('🏆 ' + status);
         } else {
-            status = '未找到领取按钮（可能已领取或登录失败）';
+            status = '未找到领取奖励按钮（可能今日已领取或登录失败）';
             console.log('⚠️ ' + status);
             await page.screenshot({ path: 'debug-no-button.png', fullPage: true });
         }
