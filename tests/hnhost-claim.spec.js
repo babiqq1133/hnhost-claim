@@ -7,7 +7,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GOST_PROXY = process.env.GOST_PROXY;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
-const TIMEOUT = 180000; // 增加到 3 分钟
+const TIMEOUT = 150000;
 
 function nowStr() {
     return new Date().toLocaleString('zh-CN', {
@@ -90,20 +90,38 @@ test('HnHost 每日领取金币', async () => {
         console.log('🌐 打开 HnHost 登录首页...');
         await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
 
-        // 点击蓝色按钮
-        console.log('🔵 点击「透过 Discord 登录用户平台」蓝色按钮...');
-        const blueBtn = page.locator('button:has-text("透過 Discord"), button:has-text("透过 Discord"), button:has-text("Discord"), text=登录').first();
+        // 加强蓝色按钮点击（适配繁体 + 不同文字）
+        console.log('🔵 尝试点击「透过 Discord 登录用户平台」蓝色按钮...');
+        const blueBtnSelectors = [
+            'button:has-text("透過 Discord")',
+            'button:has-text("透过 Discord")',
+            'button:has-text("Discord")',
+            'text=透過 Discord',
+            'text=透过 Discord',
+            'text=登录'
+        ];
 
-        if (await blueBtn.isVisible({ timeout: 20000 }).catch(() => false)) {
-            await blueBtn.scrollIntoViewIfNeeded();
-            await blueBtn.click({ delay: 1000 });
-            console.log('✅ 已点击蓝色 Discord 登录按钮');
-            await page.waitForTimeout(12000);
-        } else {
-            console.log('⚠️ 未找到蓝色按钮');
+        let clicked = false;
+        for (const sel of blueBtnSelectors) {
+            const btn = page.locator(sel).first();
+            if (await btn.isVisible({ timeout: 8000 }).catch(() => false)) {
+                console.log(`找到按钮: ${sel}`);
+                await btn.scrollIntoViewIfNeeded();
+                await btn.click({ delay: 1000 });
+                clicked = true;
+                console.log('✅ 已点击蓝色 Discord 登录按钮');
+                break;
+            }
         }
 
-        // Token 注入（加强版）
+        if (!clicked) {
+            console.log('⚠️ 所有选择器均未找到蓝色按钮');
+            await page.screenshot({ path: 'debug-homepage.png', fullPage: true });
+        }
+
+        await page.waitForTimeout(10000);
+
+        // Token 注入
         console.log('🔑 注入 Discord Token...');
         await page.evaluate((token) => {
             const timer = setInterval(() => {
@@ -111,25 +129,22 @@ test('HnHost 每日领取金币', async () => {
                     const iframe = document.createElement('iframe');
                     document.body.appendChild(iframe);
                     iframe.contentWindow.localStorage.token = `"${token}"`;
-                    localStorage.setItem('token', `"${token}"`);
                 } catch (e) {}
             }, 50);
-            setTimeout(() => clearInterval(timer), 10000);
+            setTimeout(() => clearInterval(timer), 8000);
         }, DISCORD_TOKEN);
 
-        await page.waitForTimeout(15000);
+        await page.waitForTimeout(12000);
 
-        console.log('⏳ 等待授权完成并跳转回 HnHost...');
+        console.log('⏳ 等待授权跳转...');
 
-        // 等待成功登录的标志（不再强求 code）
         await page.waitForURL(url => url.href.includes('client.hnhost.net') && !url.href.includes('/login'), 
-            { timeout: 50000 }).catch(() => {
+            { timeout: 40000 }).catch(() => {
             console.log('⚠️ 等待超时，强制跳转领取页面');
         });
 
         console.log('✅ 当前 URL:', page.url());
 
-        // 跳转领取页面
         console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
             waitUntil: 'networkidle',
@@ -140,7 +155,7 @@ test('HnHost 每日领取金币', async () => {
 
         console.log('🔍 检测领取奖励按钮...');
 
-        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励, button:has-text("领取")').first();
+        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
 
         if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
             console.log('🎁 点击领取奖励按钮...');
