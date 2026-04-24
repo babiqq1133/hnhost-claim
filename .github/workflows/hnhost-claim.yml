@@ -2,7 +2,7 @@ name: 🎮 HnHost 每日领取金币
 
 on:
   schedule:
-    - cron: '0 1 * * *'      # 每天 UTC 01:00 = 北京时间 09:00
+    - cron: '0 1 * * *'
   workflow_dispatch:
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/HnHost-Claim-Private
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
-          path: hnhost-claim
+          path: .                     # ← 关键：拉到根目录
 
       - name: 🟢 安装 Node.js
         uses: actions/setup-node@v4
@@ -26,11 +26,9 @@ jobs:
           cache: 'npm'
 
       - name: 📦 安装依赖
-        working-directory: ./hnhost-claim
         run: npm ci
 
       - name: 🌐 安装 Playwright 浏览器
-        working-directory: ./hnhost-claim
         run: npx playwright install chromium --with-deps
 
       - name: 🛡️ 启动 GOST 代理转发
@@ -51,10 +49,8 @@ jobs:
           
           echo "✅ GOST 启动完成，测试出口 IP..."
           curl -s -x http://127.0.0.1:8080 https://api.ipify.org || echo "⚠️ IP 测试失败"
-          echo "──────────────────────────────────"
 
       - name: 🚀 运行领币脚本
-        working-directory: ./hnhost-claim
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           SESSION_ID:    ${{ secrets.SESSION_ID }}
@@ -67,5 +63,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: failure-screenshots
-          path: hnhost-claim/test-results/
+          path: test-results/
           retention-days: 7
