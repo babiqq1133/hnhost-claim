@@ -81,60 +81,61 @@ test('HnHost 每日领取金币', async () => {
     const page = await browser.newPage();
     page.setDefaultTimeout(60000);
 
+    console.log('🚀 浏览器就绪！');
+
     let status = '执行中';
     let points = '';
 
     try {
-        // 第一步：打开首页并点击蓝色 Discord 登录按钮
-        console.log('🌐 打开 HnHost 登录首页...');
-        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
-
-        console.log('🔵 点击「透过 Discord 登录用户平台」蓝色按钮...');
-        const blueBtn = page.locator('button:has-text("透过 Discord"), text=透过 Discord, text=Discord').first();
-        
-        if (await blueBtn.isVisible({ timeout: 15000 }).catch(() => false)) {
-            await blueBtn.click();
-            console.log('✅ 已点击蓝色 Discord 登录按钮');
-            await page.waitForTimeout(8000);
-        } else {
-            console.log('⚠️ 未找到蓝色按钮，尝试直接跳转');
+        // 第一步：验证出口 IP（和别人一样）
+        console.log('🌐 验证出口 IP...');
+        try {
+            const res = await page.goto('https://api.ipify.org?format=json', { timeout: 15000 });
+            const ipData = await res.json().catch(() => ({}));
+            console.log(`✅ 出口 IP 确认：${ipData.ip || '获取成功'}`);
+        } catch (e) {
+            console.log('⚠️ IP 验证失败，继续执行');
         }
 
-        // 第二步：Token 注入 + 等待 Discord 授权完成
-        console.log('🔑 注入 Discord Token...');
+        console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
+
+        const authUrl = "https://discord.com/login?redirect_to=%2Foauth2%2Fauthorize%3Fscope%3Dguilds%2Bguilds.join%2Bidentify%2Bemail%26client_id%3D933437142254887052%26redirect_uri%3Dhttps%253A%252F%252Fclient.hnhost.net%252Flogin%26response_type%3Dcode%26prompt%3Dnone";
+
+        await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+        // Token 注入（关键）
         await page.evaluate((token) => {
             const timer = setInterval(() => {
                 try {
                     const iframe = document.createElement('iframe');
                     document.body.appendChild(iframe);
                     iframe.contentWindow.localStorage.token = `"${token}"`;
-                    localStorage.setItem('token', `"${token}"`);
                 } catch (e) {}
             }, 50);
             setTimeout(() => clearInterval(timer), 8000);
         }, DISCORD_TOKEN);
 
-        await page.waitForTimeout(10000);
+        await page.waitForTimeout(12000);
 
-        console.log('⏳ 等待 Discord 授权完成并跳转回 HnHost...');
-        await page.waitForURL(url => url.href.includes('client.hnhost.net') && (url.href.includes('code=') || url.href.includes('index.php')), 
-            { timeout: 45000 }).catch(() => {
-            console.log('⚠️ 等待 code 超时，尝试强制跳转领取页面');
+        console.log('⏳ 等待 OAuth2 回调...');
+        await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 40000 }).catch(() => {
+            console.log('⚠️ 未检测到 code 参数');
         });
 
         console.log('✅ 当前 URL:', page.url());
 
-        // 第三步：跳转领取页面
+        // 跳转领取页面
         console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
             waitUntil: 'networkidle',
             timeout: 60000
         });
 
-        await page.waitForTimeout(8000);
+        await page.waitForTimeout(6000);
 
         console.log('🔍 检测领取奖励按钮...');
-        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励, button:has-text("领取")').first();
+
+        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
 
         if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
             console.log('🎁 点击领取奖励按钮...');
@@ -142,7 +143,7 @@ test('HnHost 每日领取金币', async () => {
             await claimButton.click({ delay: 1000 });
             await page.waitForTimeout(10000);
 
-            points = await page.locator('text=获得|成功|HNRC|金币').first().innerText().catch(() => '+10 HNRC');
+            points = await page.locator('text=获得|成功|HNRC').first().innerText().catch(() => '+10 HNRC');
             status = `领取成功！${points}`;
         } else {
             status = '未找到领取奖励按钮（可能今日已领取）';
