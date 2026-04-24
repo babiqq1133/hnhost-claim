@@ -85,13 +85,23 @@ test('HnHost 每日领取金币', async () => {
     let points = '';
 
     try {
-        console.log('🔑 使用 Discord Token 进行 OAuth2 授权...');
+        // 第一步：打开首页并点击蓝色 Discord 登录按钮
+        console.log('🌐 打开 HnHost 登录首页...');
+        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
 
-        const authUrl = "https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join";
+        console.log('🔵 点击「透过 Discord 登录用户平台」蓝色按钮...');
+        const blueBtn = page.locator('button:has-text("透过 Discord"), text=透过 Discord, text=Discord').first();
+        
+        if (await blueBtn.isVisible({ timeout: 15000 }).catch(() => false)) {
+            await blueBtn.click();
+            console.log('✅ 已点击蓝色 Discord 登录按钮');
+            await page.waitForTimeout(8000);
+        } else {
+            console.log('⚠️ 未找到蓝色按钮，尝试直接跳转');
+        }
 
-        await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
-        // Token 注入（加强版）
+        // 第二步：Token 注入 + 等待 Discord 授权完成
+        console.log('🔑 注入 Discord Token...');
         await page.evaluate((token) => {
             const timer = setInterval(() => {
                 try {
@@ -105,22 +115,16 @@ test('HnHost 每日领取金币', async () => {
         }, DISCORD_TOKEN);
 
         await page.waitForTimeout(10000);
-        await page.reload({ waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(15000);   // 增加等待时间
 
-        console.log('⏳ 等待 code 参数或回调地址...');
-
-        // 重点加强：等待 code 参数出现
-        await page.waitForFunction(() => {
-            const url = window.location.href;
-            return url.includes('code=') || url.includes('discord.php') || url.includes('backend/pdo');
-        }, { timeout: 45000 }).catch(() => {
-            console.log('⚠️ 未检测到 code 参数，尝试强制跳转领取页面');
+        console.log('⏳ 等待 Discord 授权完成并跳转回 HnHost...');
+        await page.waitForURL(url => url.href.includes('client.hnhost.net') && (url.href.includes('code=') || url.href.includes('index.php')), 
+            { timeout: 45000 }).catch(() => {
+            console.log('⚠️ 等待 code 超时，尝试强制跳转领取页面');
         });
 
         console.log('✅ 当前 URL:', page.url());
 
-        // 无论是否拿到 code，都强制跳转到领取页面（最重要兜底）
+        // 第三步：跳转领取页面
         console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
             waitUntil: 'networkidle',
@@ -130,7 +134,6 @@ test('HnHost 每日领取金币', async () => {
         await page.waitForTimeout(8000);
 
         console.log('🔍 检测领取奖励按钮...');
-
         const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励, button:has-text("领取")').first();
 
         if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
@@ -139,7 +142,7 @@ test('HnHost 每日领取金币', async () => {
             await claimButton.click({ delay: 1000 });
             await page.waitForTimeout(10000);
 
-            points = await page.locator('text=获得|成功|HNRC|金币|积分').first().innerText().catch(() => '+10 HNRC');
+            points = await page.locator('text=获得|成功|HNRC|金币').first().innerText().catch(() => '+10 HNRC');
             status = `领取成功！${points}`;
         } else {
             status = '未找到领取奖励按钮（可能今日已领取）';
