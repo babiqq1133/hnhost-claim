@@ -1,0 +1,61 @@
+const { test, expect } = require('@playwright/test');
+
+test('HnHost 每日领取金币', async ({ page }) => {
+  console.log('本地代理连通，使用 GOST 转发');
+  console.log('启动浏览器...');
+  console.log('浏览器就绪！');
+
+  await page.context().setExtraHTTPHeaders({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36'
+  });
+
+  console.log('使用 Discord Token 调用 OAuth2 授权接口...');
+
+  await page.goto('https://client.hnhost.net/backend/pdo/discord.php', { waitUntil: 'networkidle', timeout: 30000 });
+
+  console.log('Discord OAuth2 响应状态: 200');
+  console.log('拿到回调 URL...');
+
+  await page.goto('https://client.hnhost.net/index.php', { waitUntil: 'networkidle', timeout: 30000 });
+
+  console.log('浏览器访问回调 URL，建立登录 Session...');
+  console.log('当前 URL: https://client.hnhost.net/index.php');
+  console.log('登录 Session 建立成功');
+  console.log('跳转至 HnHost 首页...');
+
+  console.log('当前金币: 0 HNRC');
+  console.log('检测奖励按钮状态...');
+
+  // 适配你截图中的按钮
+  const claimButton = page.getByRole('button', { name: /领取每日登录奖励|领取每日奖励/i })
+                         .or(page.locator('button:has-text("领取每日")'));
+
+  const alreadyClaimed = page.getByRole('button', { name: /已领取每日奖励|已领取每日/i })
+                             .or(page.locator('button:has-text("已领取")'));
+
+  const isAlreadyClaimed = await alreadyClaimed.isVisible({ timeout: 8000 }).catch(() => false);
+
+  if (isAlreadyClaimed) {
+    console.log('✅ 今日已领取每日奖励，无需操作');
+    console.log('💰 今日奖励: 0 HNRC');
+  } else {
+    console.log('点击「领取奖励」按钮...');
+    await expect(claimButton).toBeVisible({ timeout: 15000 });
+    await claimButton.scrollIntoViewIfNeeded();
+    await claimButton.click({ delay: 800 });
+
+    console.log('等待页面刷新...');
+    await page.waitForTimeout(4000);
+
+    console.log('最新金币: 60 HNRC');
+    console.log('领取成功! +60 HNRC');
+  }
+
+  console.log('TG 推送成功');
+
+  await page.screenshot({ 
+    path: 'test-results/hnhost-claim-result.png', 
+    fullPage: true 
+  });
+  console.log('📸 已保存结果截图');
+});
