@@ -90,18 +90,36 @@ test('HnHost 每日领取金币', async () => {
         console.log('🌐 打开 HnHost 登录首页...');
         await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
 
-        // 关键：点击蓝色按钮
-        console.log('🔵 点击「透过 Discord 登录用户平台」蓝色按钮...');
-        const blueBtn = page.locator('button:has-text("透过 Discord"), text=透过 Discord, text=Discord, button:has-text("登录")').first();
+        // 加强蓝色按钮点击（适配繁体 + 不同文字）
+        console.log('🔵 尝试点击「透过 Discord 登录用户平台」蓝色按钮...');
+        const blueBtnSelectors = [
+            'button:has-text("透過 Discord")',
+            'button:has-text("透过 Discord")',
+            'button:has-text("Discord")',
+            'text=透過 Discord',
+            'text=透过 Discord',
+            'text=登录'
+        ];
 
-        if (await blueBtn.isVisible({ timeout: 20000 }).catch(() => false)) {
-            await blueBtn.scrollIntoViewIfNeeded();
-            await blueBtn.click({ delay: 800 });
-            console.log('✅ 已点击蓝色 Discord 登录按钮');
-            await page.waitForTimeout(10000);
-        } else {
-            console.log('⚠️ 未找到蓝色按钮');
+        let clicked = false;
+        for (const sel of blueBtnSelectors) {
+            const btn = page.locator(sel).first();
+            if (await btn.isVisible({ timeout: 8000 }).catch(() => false)) {
+                console.log(`找到按钮: ${sel}`);
+                await btn.scrollIntoViewIfNeeded();
+                await btn.click({ delay: 1000 });
+                clicked = true;
+                console.log('✅ 已点击蓝色 Discord 登录按钮');
+                break;
+            }
         }
+
+        if (!clicked) {
+            console.log('⚠️ 所有选择器均未找到蓝色按钮');
+            await page.screenshot({ path: 'debug-homepage.png', fullPage: true });
+        }
+
+        await page.waitForTimeout(10000);
 
         // Token 注入
         console.log('🔑 注入 Discord Token...');
@@ -118,10 +136,10 @@ test('HnHost 每日领取金币', async () => {
 
         await page.waitForTimeout(12000);
 
-        console.log('⏳ 等待授权完成并跳转...');
+        console.log('⏳ 等待授权跳转...');
 
         await page.waitForURL(url => url.href.includes('client.hnhost.net') && !url.href.includes('/login'), 
-            { timeout: 45000 }).catch(() => {
+            { timeout: 40000 }).catch(() => {
             console.log('⚠️ 等待超时，强制跳转领取页面');
         });
 
