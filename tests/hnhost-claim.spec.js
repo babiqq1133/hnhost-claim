@@ -55,7 +55,7 @@ test('HnHost 每日领取金币', async () => {
         console.log('🔑 使用 Discord Token 进行 OAuth2 授权...');
 
         // === 核心修改：先构造 OAuth2 授权链接（更可靠的方式）===
-        const clientId = '933437142254887052';
+        const clientId = '977981235618021377';
         const redirectUri = 'https://client.hnhost.net/backend/pdo/discord.php';  // 根据别人日志推测的回调地址
         const scopes = 'identify email guilds guilds.join'; // 根据你的原链接调整
 
