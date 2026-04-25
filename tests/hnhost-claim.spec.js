@@ -75,7 +75,7 @@ async function sendTGReport(page, result) {
 async function handleDiscordLogin(page) {
     console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
 
-    const authorizeUrl = "https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join";
+    const authorizeUrl = "https://client.hnhost.net/login.php";
 
     await page.goto(authorizeUrl, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(8000);
