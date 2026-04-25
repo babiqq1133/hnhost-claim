@@ -127,61 +127,61 @@ test('HnHost 每日领取金币', async () => {
         await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 30000 });
 
         // 获取当前金币
-        const currentGold = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
+        const currentGold = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
         console.log(`💰 当前金币: ${currentGold}`);
 
-        // 多轮滚动到底部（类似 ByteNut 的稳健做法）
+        // 多轮滚动到底部
         console.log('📜 多轮滚动到底部，确保按钮出现...');
-        for (let i = 0; i < 6; i++) {
+        for (let i = 0; i < 8; i++) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(3500);
+            await page.waitForTimeout(4000);
         }
 
         console.log('🪙 检测领取奖励按钮状态...');
 
-        // === 核心点击逻辑（参考 ByteNut 风格）===
-        const extendButtonXPath = "//button[contains(., '领取奖励')] | //button[contains(text(), '领取奖励')]";
-        
-        // 先尝试 Playwright 原生方式
-        let claimButton = page.locator('button').filter({ hasText: /领取奖励|领取每日签到奖励|领取每日登录奖励/i }).first();
+        // ==================== 终极 JS 点击（最强兜底） ====================
+        console.log('🔍 使用终极 JS 方式查找任何包含“领取”的按钮...');
 
-        const buttonCount = await claimButton.count();
-
-        if (buttonCount > 0) {
-            console.log('🎁 找到「领取奖励」按钮');
-
-            // 滚动到可见位置
-            await claimButton.scrollIntoViewIfNeeded();
-            await page.waitForTimeout(1500);
-
-            console.log('🖱️ 点击「领取奖励」按钮...');
-            
-            // 使用 JS 点击（更稳，类似 ByteNut 的 js_click）
-            await page.evaluate(() => {
-                const btns = document.querySelectorAll('button');
-                for (let btn of btns) {
-                    if (btn.innerText.includes('领取奖励')) {
-                        btn.scrollIntoView({ block: 'center' });
-                        btn.click();
-                        return;
-                    }
+        const clicked = await page.evaluate(() => {
+            const buttons = document.querySelectorAll('button, [role="button"], .btn, input[type="button"]');
+            for (let btn of buttons) {
+                const text = (btn.innerText || btn.textContent || '').trim();
+                if (text.includes('领取奖励') || 
+                    text.includes('领取每日') || 
+                    text.includes('领取') || 
+                    text.includes('签到') || 
+                    text.includes('登录奖励')) {
+                    console.log('✅ 在页面中找到按钮，文字为：', text);
+                    btn.scrollIntoView({ block: 'center' });
+                    setTimeout(() => btn.click(), 300);   // 轻微延迟点击
+                    return true;
                 }
-            });
+            }
+            return false;
+        });
 
-            await page.waitForTimeout(10000); // 等待页面刷新和金币更新
+        if (clicked) {
+            console.log('🖱️ 已通过 JS 点击「领取奖励」按钮...');
+            await page.waitForTimeout(12000); // 等待领取后页面刷新和金币更新
 
-            // 验证结果
-            const newGold = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
+            // 验证最新金币
+            const newGold = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
             console.log(`🏆 最新金币: ${newGold}`);
 
             status = '领取成功！ +10 HNRC';
             console.log(`🎉 ${status}`);
 
             await page.screenshot({ path: `hnhost_claim_success_${Date.now()}.png`, fullPage: true });
-
         } else {
             await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true });
             console.log('💾 已保存调试截图 hnhost_debug_*.png');
+
+            // 打印页面底部文字帮助调试
+            const bottomText = await page.evaluate(() => {
+                return document.body.innerText.slice(-3000);
+            }).catch(() => '无法获取');
+            console.log('页面底部部分内容：\n', bottomText);
+
             status = '未找到领取奖励按钮（可能今日已领取）';
             console.log('❌ ' + status);
         }
