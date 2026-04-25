@@ -2,6 +2,7 @@
 const { test, chromium } = require('@playwright/test');
 const https = require('https');
 const fs = require('fs');
+const { URL } = require('url');
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GOST_PROXY = process.env.GOST_PROXY;
@@ -34,7 +35,7 @@ async function sendTGReport(page, status, points = '') {
     const photoPath = `hnhost_claim_${Date.now()}.png`;
     try {
         if (!page.isClosed()) await page.screenshot({ path: photoPath, fullPage: true });
-    } catch {}
+    } catch (e) {}
 
     const report = [
         `🪙 <b>HnHost 每日领取金币报告</b>`,
@@ -79,7 +80,7 @@ test('HnHost 每日领取金币', async () => {
 
     const browser = await chromium.launch({ headless: true, proxy: proxyConfig });
     const page = await browser.newPage();
-    page.setDefaultTimeout(60000);
+    page.setDefaultTimeout(90000);   // 适当加大默认超时
 
     console.log('🚀 浏览器就绪！');
 
@@ -98,41 +99,75 @@ test('HnHost 每日领取金币', async () => {
 
         console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
 
-        const authUrl = "https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join";
+        // 可选：添加 state 参数（推荐）
+        const state = Math.random().toString(36).substring(2, 15);
+        const authUrl = `https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join&state=${state}`;
 
         await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // Token 注入
+        // Token 注入（更稳定写法）
+        console.log('🔧 注入 Discord Token...');
         await page.evaluate((token) => {
-            const timer = setInterval(() => {
-                try {
-                    const iframe = document.createElement('iframe');
-                    document.body.appendChild(iframe);
-                    iframe.contentWindow.localStorage.token = `"${token}"`;
-                } catch (e) {}
-            }, 50);
-            setTimeout(() => clearInterval(timer), 8000);
+            localStorage.setItem('token', `"${token}"`);
+            // 额外注入方式，兼容更多情况
+            Object.defineProperty(window, 'token', { value: token, writable: true });
         }, DISCORD_TOKEN);
 
-        await page.waitForTimeout(10000);
+        await page.waitForTimeout(3000);
 
-        // 关键一步：等待 OAuth2 响应状态 200（模仿别人日志）
-        console.log('⏳ 等待 Discord OAuth2 响应...');
-        await page.waitForResponse(response => 
-            response.url().includes('discord.com') && response.status() === 200, 
-            { timeout: 30000 }
+        // 等待 Discord 处理授权（可能有登录/授权按钮）
+        console.log('⏳ 等待 Discord OAuth2 处理...');
+        await page.waitForResponse(
+            response => response.url().includes('discord.com') && response.status() === 200,
+            { timeout: 45000 }
         ).catch(() => console.log('⚠️ 未等到 200 响应'));
 
         console.log('✅ Discord OAuth2 响应状态: 200');
 
-        // 等待回调 URL
-        console.log('⏳ 等待拿到回调 URL...');
-        await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 40000 }).catch(() => {
-            console.log('⚠️ 未检测到 code 参数');
-        });
+        // ==================== 关键修复：等待回调 URL ====================
+        console.log('⏳ 等待重定向到回调页面 (discord.php?code=...) ...');
 
-        console.log('✅ 当前 URL:', page.url());
+        let code = null;
 
+        try {
+            // 优先使用 waitForURL 精确等待
+            await page.waitForURL(/discord\.php.*code=/, { timeout: 40000 });
+            console.log('✅ 已成功重定向到回调页面');
+        } catch (e) {
+            console.log('⚠️ waitForURL 未匹配到精确 URL，尝试从当前 URL 提取 code...');
+        }
+
+        // 从当前 URL 中提取 code（更可靠的兜底方案）
+        const currentUrl = page.url();
+        console.log('📍 当前 URL:', currentUrl);
+
+        try {
+            const urlObj = new URL(currentUrl);
+            code = urlObj.searchParams.get('code');
+
+            if (!code && currentUrl.includes('redirect_to') || currentUrl.includes('discord.com/login')) {
+                // 如果还在 Discord 中间页，尝试再等一次完整跳转
+                await page.waitForTimeout(5000);
+                const finalUrl = page.url();
+                const finalUrlObj = new URL(finalUrl);
+                code = finalUrlObj.searchParams.get('code');
+            }
+        } catch (e) {
+            console.log('⚠️ URL 解析失败');
+        }
+
+        if (!code) {
+            console.log('❌ 仍然未检测到 code 参数！');
+            console.log('💡 建议检查：');
+            console.log('   1. Discord 开发者后台的 Redirect URI 是否完全一致？');
+            console.log('   2. redirect_uri 是否已正确注册为 https://client.hnhost.net/backend/pdo/discord.php');
+            await page.screenshot({ path: 'debug-no-code.png', fullPage: true });
+            throw new Error('未获取到 OAuth code');
+        }
+
+        console.log(`✅ 成功获取 code 参数！长度: ${code.length}`);
+
+        // ==================== 继续执行领取逻辑 ====================
         console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
             waitUntil: 'networkidle',
