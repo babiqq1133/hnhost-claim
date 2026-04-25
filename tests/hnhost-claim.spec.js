@@ -4,55 +4,54 @@ const https = require('https');
 const fs = require('fs');
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const GOST_PROXY = process.env.GOST_PROXY;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
 const TIMEOUT = 180000;
 
 function nowStr() {
-    return new Date().toLocaleString('zh-CN', { 
-        timeZone: 'Asia/Shanghai', 
-        hour12: false 
+    return new Date().toLocaleString('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        hour12: false,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
     }).replace(/\//g, '-');
 }
 
 function escapeHtml(text) {
-    if (!text) return "";
+    if (!text) return '';
     return text.toString()
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
-async function sendTGReport(page, result) {
+async function sendTGReport(page, status, points = '') {
     if (!TG_CHAT_ID || !TG_TOKEN) return;
 
-    const photoPath = `hnhost_report_${Date.now()}.png`;
+    const photoPath = `hnhost_claim_${Date.now()}.png`;
     try {
-        if (!page.isClosed()) {
-            await page.screenshot({ path: photoPath, fullPage: true });
-        }
-    } catch (e) {}
+        if (!page.isClosed()) await page.screenshot({ path: photoPath, fullPage: true });
+    } catch {}
 
-    const reportContent = [
+    const report = [
         `🪙 <b>HnHost 每日领取金币报告</b>`,
         `━━━━━━━━━━━━━━━━━━`,
         `👤 账户：<b><code>${escapeHtml(DISCORD_TOKEN ? DISCORD_TOKEN.substring(0, 25) + '...' : 'N/A')}</code></b>`,
-        `📊 状态：${escapeHtml(result)}`,
+        `📊 状态：${escapeHtml(status)}`,
+        points ? `💰 本次获得：${points}` : '',
         `🕒 北京时间：<b><code>${escapeHtml(nowStr())}</code></b>`,
         `━━━━━━━━━━━━━━━━━━`
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
     const FormData = require('form-data');
     const form = new FormData();
     form.append('chat_id', TG_CHAT_ID);
-    form.append('caption', reportContent);
+    form.append('caption', report);
     form.append('parse_mode', 'HTML');
-
-    if (fs.existsSync(photoPath)) {
-        form.append('photo', fs.createReadStream(photoPath));
-    }
+    if (fs.existsSync(photoPath)) form.append('photo', fs.createReadStream(photoPath));
 
     return new Promise((resolve) => {
         const req = https.request({
@@ -65,107 +64,118 @@ async function sendTGReport(page, result) {
             if (fs.existsSync(photoPath)) fs.unlinkSync(photoPath);
             resolve();
         });
-
         req.on('error', () => resolve());
         form.pipe(req);
     });
 }
 
-// ==================== 按照别人流程的登录函数 ====================
-async function handleDiscordLogin(page) {
-    console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
-
-    const authorizeUrl = "https://client.hnhost.net/login.php";
-
-    await page.goto(authorizeUrl, { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(8000);
-
-    console.log('⏳ 等待 OAuth2 回调...');
-
+// 加强版 Cloudflare 过盾
+async function handleCloudflare(page) {
+    console.log('🛡️ 检测 Cloudflare 验证...');
     try {
-        await page.waitForURL('**/discord.php?code=*', { timeout: 30000 });
-        console.log('✅ 拿到回调 URL');
-    } catch (e) {
-        console.log('⚠️ 未检测到 code 回调，尝试补充处理...');
-        // 如果出现授权按钮，点击它
-        const authBtn = page.getByRole('button', { name: /Authorize|授权|同意/i }).first();
-        if (await authBtn.isVisible({ timeout: 10000 }).catch(() => false)) {
-            await authBtn.click();
-            await page.waitForTimeout(6000);
-        }
-    }
+        // 等待 Cloudflare 页面加载
+        await page.waitForTimeout(5000);
 
-    await page.waitForTimeout(5000);
-    console.log('✅ 登录 Session 建立完成');
+        const checkbox = page.locator('input[type="checkbox"], button:has-text("Verify you are human"), [data-action="verify"]');
+        
+        if (await checkbox.isVisible({ timeout: 15000 }).catch(() => false)) {
+            console.log('🛡️ 发现 Cloudflare 复选框，尝试点击...');
+            await checkbox.click({ delay: 1000 }).catch(() => {});
+            await page.waitForTimeout(12000);   // 等待验证通过
+            console.log('✅ Cloudflare 验证尝试完成');
+            return true;
+        }
+    } catch (e) {
+        console.log('Cloudflare 处理异常，继续执行');
+    }
+    return false;
 }
 
-// ==================== 主测试 ====================
 test('HnHost 每日领取金币', async () => {
     test.setTimeout(TIMEOUT);
-    if (!DISCORD_TOKEN) throw new Error('❌ 缺少 DISCORD_TOKEN 配置');
 
-    const browser = await chromium.launch({
-        headless: true,        // 调试时改为 false
-        proxy: process.env.GOST_PROXY ? { server: process.env.GOST_PROXY } : undefined,
-    });
+    if (!DISCORD_TOKEN) throw new Error('❌ DISCORD_TOKEN 未配置');
 
+    const proxyConfig = GOST_PROXY ? { server: GOST_PROXY } : undefined;
+    if (proxyConfig) console.log(`🛡️ 使用 GOST 代理: ${GOST_PROXY}`);
+
+    const browser = await chromium.launch({ headless: true, proxy: proxyConfig });
     const page = await browser.newPage();
-    page.setDefaultTimeout(90000);
+    page.setDefaultTimeout(60000);
+
+    console.log('🚀 浏览器就绪！');
 
     let status = '执行中';
+    let points = '';
 
     try {
-        console.log('🌐 验证出口 IP...');
-        const res = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded' }).catch(() => null);
-        if (res) console.log(`✅ 出口 IP 确认：${await res.text()}`);
+        console.log('🌐 打开 HnHost 登录首页...');
+        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
 
-        await handleDiscordLogin(page);
+        await handleCloudflare(page);
 
-        console.log('🔄 跳转到主仪表盘...');
-        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 45000 });
+        console.log('🔵 点击蓝色 Discord 登录按钮...');
+        const blueBtn = page.locator('button:has-text("透過 Discord"), button:has-text("透过 Discord"), button:has-text("Discord"), text=登录').first();
+
+        if (await blueBtn.isVisible({ timeout: 20000 }).catch(() => false)) {
+            await blueBtn.scrollIntoViewIfNeeded();
+            await blueBtn.click({ delay: 1000 });
+            console.log('✅ 已点击蓝色按钮');
+            await page.waitForTimeout(12000);
+        } else {
+            console.log('⚠️ 未找到蓝色按钮');
+        }
+
+        await handleCloudflare(page);
+
+        console.log('🔑 注入 Discord Token...');
+        await page.evaluate((token) => {
+            localStorage.setItem('token', `"${token}"`);
+        }, DISCORD_TOKEN);
+
+        await page.waitForTimeout(15000);
+
+        console.log('⏳ 等待授权跳转...');
+        await page.waitForURL(url => url.href.includes('client.hnhost.net') && !url.href.includes('/login'), 
+            { timeout: 50000 }).catch(() => {
+            console.log('⚠️ 等待超时，强制跳转领取页面');
+        });
+
+        console.log('✅ 当前 URL:', page.url());
+
+        console.log('🌐 跳转到领取页面...');
+        await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
+            waitUntil: 'networkidle',
+            timeout: 60000
+        });
+
+        await handleCloudflare(page);
         await page.waitForTimeout(8000);
 
-        const currentGold = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
-        console.log(`💰 当前金币: ${currentGold}`);
+        console.log('🔍 检测领取奖励按钮...');
 
-        // 多轮滚动到底部
-        console.log('📜 多轮滚动到底部，确保按钮出现...');
-        for (let i = 0; i < 8; i++) {
-            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(4000);
-        }
+        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
 
-        console.log('🪙 检测领取奖励按钮...');
-
-        // 简单可靠的按钮点击（参考别人成功风格）
-        const claimButton = page.locator('button').filter({ hasText: /领取奖励/i }).first();
-        
-        if (await claimButton.count() > 0) {
-            console.log('🎁 找到领取奖励按钮，点击...');
+        if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
+            console.log('🎁 点击领取奖励按钮...');
             await claimButton.scrollIntoViewIfNeeded();
-            await page.waitForTimeout(2000);
             await claimButton.click({ delay: 1000 });
-
             await page.waitForTimeout(10000);
 
-            const newGold = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
-            console.log(`🏆 最新金币: ${newGold}`);
-
-            status = '领取成功！ +10 HNRC';
-            console.log(`✅ ${status}`);
+            points = await page.locator('text=获得|成功|HNRC').first().innerText().catch(() => '+10 HNRC');
+            status = `领取成功！${points}`;
         } else {
-            await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true });
-            console.log('💾 已保存调试截图 hnhost_debug_*.png');
             status = '未找到领取奖励按钮（可能今日已领取）';
-            console.log('❌ ' + status);
+            await page.screenshot({ path: 'debug-no-button.png', fullPage: true });
         }
 
-        await sendTGReport(page, status);
+        await sendTGReport(page, status, points);
 
-    } catch (e) {
-        console.log(`❌ 异常: ${e.message}`);
-        status = `脚本异常: ${e.message}`;
-        await sendTGReport(page, status);
+    } catch (error) {
+        status = `执行失败: ${error.message}`;
+        console.log('❌ ' + status);
+        try { await sendTGReport(page, status); } catch {}
+        throw error;
     } finally {
         await browser.close();
     }
