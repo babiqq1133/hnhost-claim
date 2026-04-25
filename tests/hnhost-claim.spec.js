@@ -94,11 +94,22 @@ test('HnHost 每日领取金币', async () => {
 
         await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
+        // 改进后的 Token 注入（等待页面加载后再注入）
         console.log('🔧 注入 Discord Token...');
+        await page.waitForLoadState('domcontentloaded');
+        await page.waitForTimeout(3000);
+
         await page.evaluate((token) => {
-            localStorage.setItem('token', `"${token}"`);
+            // 安全注入
+            if (typeof localStorage !== 'undefined') {
+                localStorage.setItem('token', `"${token}"`);
+                console.log('localStorage injected');
+            }
             window.token = token;
-        }, DISCORD_TOKEN);
+            window.__DISCORD_TOKEN__ = token;
+        }, DISCORD_TOKEN).catch(err => {
+            console.log('注入时出现警告:', err.message);
+        });
 
         await page.waitForTimeout(8000);
 
@@ -108,8 +119,8 @@ test('HnHost 每日领取金币', async () => {
 
         console.log('✅ Discord OAuth2 响应状态: 200');
 
-        // 关键步骤：等待回调 URL
-        console.log('⏳ 等待拿到回调 URL (discord.php?code=...) ...');
+        // 等待回调 URL
+        console.log('⏳ 等待拿到回调 URL...');
         await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 45000 }).catch(() => {
             console.log('⚠️ 未检测到 code 参数');
         });
@@ -117,7 +128,7 @@ test('HnHost 每日领取金币', async () => {
         const callbackUrl = page.url();
         console.log('✅ 拿到回调 URL:', callbackUrl);
 
-        // 主动访问回调 URL，建立 Session（这是成功日志里的关键一步）
+        // 访问回调 URL 建立 Session
         console.log('🌐 浏览器访问回调 URL，建立登录 Session...');
         await page.goto(callbackUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
@@ -132,7 +143,6 @@ test('HnHost 每日领取金币', async () => {
 
         await page.waitForTimeout(8000);
 
-        console.log('🔍 检测领取奖励按钮...');
         const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
 
         if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
@@ -145,7 +155,6 @@ test('HnHost 每日领取金币', async () => {
             status = `领取成功！${points}`;
         } else {
             status = '未找到领取奖励按钮（可能今日已领取）';
-            await page.screenshot({ path: 'debug-no-button.png', fullPage: true });
         }
 
         await sendTGReport(page, status, points);
