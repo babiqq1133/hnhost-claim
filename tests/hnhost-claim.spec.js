@@ -7,7 +7,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GOST_PROXY = process.env.GOST_PROXY;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
-const TIMEOUT = 180000;
+const TIMEOUT = 150000;
 
 function nowStr() {
     return new Date().toLocaleString('zh-CN', {
@@ -69,28 +69,6 @@ async function sendTGReport(page, status, points = '') {
     });
 }
 
-// 加强版 Cloudflare 过盾
-async function handleCloudflare(page) {
-    console.log('🛡️ 检测 Cloudflare 验证...');
-    try {
-        // 等待 Cloudflare 页面加载
-        await page.waitForTimeout(5000);
-
-        const checkbox = page.locator('input[type="checkbox"], button:has-text("Verify you are human"), [data-action="verify"]');
-        
-        if (await checkbox.isVisible({ timeout: 15000 }).catch(() => false)) {
-            console.log('🛡️ 发现 Cloudflare 复选框，尝试点击...');
-            await checkbox.click({ delay: 1000 }).catch(() => {});
-            await page.waitForTimeout(12000);   // 等待验证通过
-            console.log('✅ Cloudflare 验证尝试完成');
-            return true;
-        }
-    } catch (e) {
-        console.log('Cloudflare 处理异常，继续执行');
-    }
-    return false;
-}
-
 test('HnHost 每日领取金币', async () => {
     test.setTimeout(TIMEOUT);
 
@@ -109,51 +87,56 @@ test('HnHost 每日领取金币', async () => {
     let points = '';
 
     try {
-        console.log('🌐 打开 HnHost 登录首页...');
-        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
-
-        await handleCloudflare(page);
-
-        console.log('🔵 点击蓝色 Discord 登录按钮...');
-        const blueBtn = page.locator('button:has-text("透過 Discord"), button:has-text("透过 Discord"), button:has-text("Discord"), text=登录').first();
-
-        if (await blueBtn.isVisible({ timeout: 20000 }).catch(() => false)) {
-            await blueBtn.scrollIntoViewIfNeeded();
-            await blueBtn.click({ delay: 1000 });
-            console.log('✅ 已点击蓝色按钮');
-            await page.waitForTimeout(12000);
-        } else {
-            console.log('⚠️ 未找到蓝色按钮');
+        // 1. 验证出口 IP
+        console.log('🌐 验证出口 IP...');
+        try {
+            const res = await page.goto('https://api.ipify.org?format=json', { timeout: 15000 });
+            const ipData = await res.json().catch(() => ({}));
+            console.log(`✅ 出口 IP 确认：${ipData.ip || '获取成功'}`);
+        } catch (e) {
+            console.log('⚠️ IP 验证失败，继续执行');
         }
 
-        await handleCloudflare(page);
+        // 2. 使用 Discord Token 调用 OAuth2
+        console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
 
-        console.log('🔑 注入 Discord Token...');
+        const authUrl = "https://discord.com/login?redirect_to=%2Foauth2%2Fauthorize%3Fscope%3Dguilds%2Bguilds.join%2Bidentify%2Bemail%26client_id%3D933437142254887052%26redirect_uri%3Dhttps%253A%252F%252Fclient.hnhost.net%252Flogin%26response_type%3Dcode%26prompt%3Dnone";
+
+        await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+        // Token 注入
         await page.evaluate((token) => {
-            localStorage.setItem('token', `"${token}"`);
+            const timer = setInterval(() => {
+                try {
+                    const iframe = document.createElement('iframe');
+                    document.body.appendChild(iframe);
+                    iframe.contentWindow.localStorage.token = `"${token}"`;
+                } catch (e) {}
+            }, 50);
+            setTimeout(() => clearInterval(timer), 8000);
         }, DISCORD_TOKEN);
 
-        await page.waitForTimeout(15000);
+        await page.waitForTimeout(12000);
 
-        console.log('⏳ 等待授权跳转...');
-        await page.waitForURL(url => url.href.includes('client.hnhost.net') && !url.href.includes('/login'), 
-            { timeout: 50000 }).catch(() => {
-            console.log('⚠️ 等待超时，强制跳转领取页面');
+        // 3. 等待回调 URL（最关键一步）
+        console.log('⏳ 等待 OAuth2 回调...');
+        await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 45000 }).catch(() => {
+            console.log('⚠️ 未检测到 code 参数');
         });
 
         console.log('✅ 当前 URL:', page.url());
 
+        // 4. 跳转领取页面
         console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
             waitUntil: 'networkidle',
             timeout: 60000
         });
 
-        await handleCloudflare(page);
-        await page.waitForTimeout(8000);
+        await page.waitForTimeout(6000);
 
+        // 5. 点击领取按钮
         console.log('🔍 检测领取奖励按钮...');
-
         const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
 
         if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
@@ -164,8 +147,10 @@ test('HnHost 每日领取金币', async () => {
 
             points = await page.locator('text=获得|成功|HNRC').first().innerText().catch(() => '+10 HNRC');
             status = `领取成功！${points}`;
+            console.log('🏆 ' + status);
         } else {
             status = '未找到领取奖励按钮（可能今日已领取）';
+            console.log('⚠️ ' + status);
             await page.screenshot({ path: 'debug-no-button.png', fullPage: true });
         }
 
