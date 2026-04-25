@@ -28,7 +28,7 @@ function escapeHtml(text) {
         .replace(/'/g, "&#039;");
 }
 
-// TG 推送（简化版，保持你的风格）
+// TG 推送
 async function sendTGReport(page, result) {
     if (!TG_CHAT_ID || !TG_TOKEN) {
         console.log('⚠️ TG_BOT 未配置，跳过推送');
@@ -80,7 +80,7 @@ async function sendTGReport(page, result) {
     });
 }
 
-// === 你原来的 Token 注入方式（已适配 HnHost）===
+// Token 登录函数（已修复变量错误）
 async function handleDiscordLoginWithToken(page, token) {
     const DIRECT_AUTH_URL = "https://discord.com/login?redirect_to=%2Foauth2%2Fauthorize%3Fscope%3Dguilds%2Bguilds.join%2Bidentify%2Bemail%26client_id%3D933437142254887052%26redirect_uri%3Dhttps%253A%252F%252Fclient.hnhost.net%252Flogin%26response_type%3Dcode%26prompt%3Dnone";
 
@@ -101,46 +101,10 @@ async function handleDiscordLoginWithToken(page, token) {
                 location.reload();
             }, 3000);
         };
-        injector(t);
-    }, t);
+        injector(t);   // 这里已经修正为正确的参数
+    }, token);   // 传递 token 参数
 
     await page.waitForTimeout(15000);
-}
-
-// 处理 OAuth 授权页（保留你的原函数）
-async function handleOAuthPage(page) {
-    await page.waitForTimeout(2000);
-
-    for (let i = 0; i < 5; i++) {
-        if (!page.url().includes('discord.com')) return;
-
-        try {
-            const btn = await page.waitForSelector('button.primary_a22cb0', { timeout: 3000 });
-            const text = (await btn.innerText()).trim();
-
-            if (/scroll/i.test(text) || text.includes('滚动')) {
-                await page.evaluate(() => {
-                    const s = document.querySelector('[class*="scroller"]') || document.querySelector('[class*="content"]');
-                    if (s) s.scrollTop = s.scrollHeight;
-                    window.scrollTo(0, document.body.scrollHeight);
-                });
-                await page.waitForTimeout(1500);
-                await btn.click();
-                await page.waitForTimeout(1500);
-            } else if (/authorize/i.test(text) || text.includes('授权')) {
-                await btn.click();
-                await page.waitForTimeout(3000);
-                return;
-            } else {
-                await page.waitForTimeout(1500);
-            }
-        } catch {
-            try {
-                await page.waitForURL(url => !url.toString().includes('discord.com'), { timeout: 10000 });
-            } catch {}
-            return;
-        }
-    }
 }
 
 test('HnHost 每日领取金币', async () => {
@@ -161,33 +125,21 @@ test('HnHost 每日领取金币', async () => {
         headless: true,
         proxy: proxyConfig,
     });
-    const context = await browser.newContext({
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36'
-    });
-    const page = await context.newPage();
+    const page = await browser.newPage();
     page.setDefaultTimeout(TIMEOUT);
 
     try {
         console.log('🌐 验证出口 IP...');
         try {
             const res = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded' });
-            const ip = await res.text();
-            console.log(`✅ 出口 IP 确认：${ip.trim()}`);
+            const body = await res.text();
+            console.log(`✅ 出口 IP 确认：${body.trim()}`);
         } catch {
             console.log('⚠️ IP 验证超时，跳过');
         }
 
-        // === Token 登录部分（使用你原来的方式）===
+        // Token 登录
         await handleDiscordLoginWithToken(page, DISCORD_TOKEN);
-
-        console.log('⏳ 等待 OAuth 授权页...');
-        try {
-            await page.waitForURL(/discord\.com\/oauth2\/authorize/, { timeout: 20000 });
-            console.log('🔍 进入 OAuth 授权页，处理中...');
-            await handleOAuthPage(page);
-        } catch (e) {
-            console.log('ℹ️ 未检测到授权页或已自动跳转');
-        }
 
         console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', { waitUntil: 'networkidle', timeout: 60000 });
@@ -204,13 +156,13 @@ test('HnHost 每日领取金币', async () => {
             await claimButton.click({ delay: 1000 });
             await page.waitForTimeout(10000);
 
-            points = await page.locator('text=获得|成功|HNRC').first().innerText().catch(() => '+10 HNRC');
-            status = `领取成功！${points}`;
+            const result = await page.locator('text=获得|成功|HNRC').first().innerText().catch(() => '领取完成');
+            status = `领取成功！${result}`;
         } else {
             status = '未找到领取奖励按钮（可能今日已领取）';
         }
 
-        await sendTGReport(page, status, points);
+        await sendTGReport(page, status);
 
     } catch (e) {
         console.log(`❌ 异常: ${e.message}`);
