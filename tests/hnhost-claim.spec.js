@@ -103,7 +103,7 @@ test('HnHost 每日领取金币', async () => {
         const clientId = '1497635385562628296';
         const state = Math.random().toString(36).substring(2, 15);
         
-        const authUrl = `https://discord.com/oauth2/authorize?client_id=${clientId}&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join&state=${state}`;
+        const authUrl = `https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join}`;
 
         await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
