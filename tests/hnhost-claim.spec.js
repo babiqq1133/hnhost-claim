@@ -6,7 +6,7 @@ const fs = require('fs');
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
-const TIMEOUT = 200000;
+const TIMEOUT = 180000;
 
 function nowStr() {
     return new Date().toLocaleString('zh-CN', { 
@@ -71,7 +71,7 @@ async function sendTGReport(page, result) {
     });
 }
 
-// ==================== 登录函数（已优化） ====================
+// 登录函数（优化版）
 async function handleDiscordLogin(page, discordToken) {
     console.log('🔑 开始 Discord 登录流程...');
 
@@ -86,7 +86,7 @@ async function handleDiscordLogin(page, discordToken) {
         await page.waitForURL('**/discord.php?code=*', { timeout: 25000 });
         console.log('✅ OAuth2 回调成功');
     } catch (e) {
-        console.log('⚠️ 未检测到 code 回调，尝试 Token 注入回退...');
+        console.log('⚠️ 未检测到 code 回调，使用 Token 注入回退...');
         await page.evaluate((t) => {
             try {
                 if (typeof localStorage !== "undefined") localStorage.setItem("token", `"${t}"`);
@@ -98,7 +98,6 @@ async function handleDiscordLogin(page, discordToken) {
 
     await page.waitForTimeout(5000);
     await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
-    
     console.log('✅ 登录 Session 建立完成');
 }
 
@@ -108,7 +107,7 @@ test('HnHost 每日领取金币', async () => {
     if (!DISCORD_TOKEN) throw new Error('❌ 缺少 DISCORD_TOKEN 配置');
 
     const browser = await chromium.launch({
-        headless: true,   // 调试时可改为 false
+        headless: true,
         proxy: process.env.GOST_PROXY ? { server: process.env.GOST_PROXY } : undefined,
     });
 
@@ -119,75 +118,55 @@ test('HnHost 每日领取金币', async () => {
 
     try {
         console.log('🌐 验证出口 IP...');
-        try {
-            const res = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded' });
-            console.log(`✅ 出口 IP 确认：${await res.text()}`);
-        } catch (e) {}
+        const res = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded' }).catch(() => null);
+        if (res) console.log(`✅ 出口 IP 确认：${await res.text()}`);
 
         await handleDiscordLogin(page, DISCORD_TOKEN);
 
-        // 点击伺服器面板入口（如果需要）
-        console.log('🔍 点击伺服器面板入口...');
-        const panelLink = page.locator('text=伺服器面板').first();
-        if (await panelLink.isVisible({ timeout: 10000 }).catch(() => false)) {
-            await panelLink.click();
-            await page.waitForTimeout(5000);
-        }
-
-        // 确保回到主仪表盘
         console.log('🔄 返回主仪表盘...');
         await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 30000 });
 
-        // 显示当前金币
-        const currentPointsText = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
-        console.log(`💰 当前金币: ${currentPointsText}`);
+        // 获取当前金币
+        const currentGold = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
+        console.log(`💰 当前金币: ${currentGold}`);
 
         // 多轮滚动到底部
         console.log('📜 多轮滚动到底部，确保按钮出现...');
         for (let i = 0; i < 6; i++) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(4000);
+            await page.waitForTimeout(3000);
         }
 
         console.log('🪙 检测领取奖励按钮...');
 
-        // === 关键修复：精准匹配你截图中的按钮文字 ===
-        const claimButton = page.locator('button')
-            .filter({ hasText: /领取奖励|领取每日签到奖励|签到奖励/i })
-            .or(page.getByText('领取奖励', { exact: false }))
-            .or(page.getByText('领取每日签到奖励', { exact: false }))
+        // === 按照你要求精确写法：每日领取登录/签到奖励 + 按钮“领取奖励” ===
+        const claimButton = page.getByRole('button', { name: /领取奖励/i })
+            .or(page.locator('button:has-text("领取奖励")'))
+            .or(page.locator('text=领取每日签到奖励').locator('..').locator('button'))
+            .or(page.locator('text=领取每日登录奖励').locator('..').locator('button'))
             .first();
 
-        const buttonCount = await claimButton.count();
+        const isVisible = await claimButton.isVisible({ timeout: 15000 }).catch(() => false);
 
-        if (buttonCount > 0) {
-            console.log(`🎁 找到领取奖励按钮 (${buttonCount} 个)，准备点击...`);
+        if (isVisible) {
+            console.log('🎁 点击「领取奖励」按钮...');
+            await claimButton.scrollIntoViewIfNeeded();
+            await page.waitForTimeout(1500);
+            await claimButton.click({ delay: 800 });
+
+            await page.waitForTimeout(8000); // 等待刷新
+
+            // 验证领取结果
+            const newGold = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
+            console.log(`🏆 最新金币: ${newGold}`);
+
+            status = '领取成功！ +10 HNRC';
+            console.log(`🎉 ${status}`);
             
-            await claimButton.scrollIntoViewIfNeeded({ timeout: 10000 });
-            await page.waitForTimeout(2000);
-            
-            await claimButton.click({ delay: 1000 });
-
-            await page.waitForTimeout(10000); // 等待领取后页面刷新
-
-            // 检查成功提示
-            const successText = await page.locator('text=/获得|成功|HN Points|金币|\+10|领取成功/i')
-                .first().innerText().catch(() => '');
-            
-            status = successText ? `领取成功！ ${successText}` : '领取成功！ +10 HN Points';
-            console.log(`✅ ${status}`);
-
             await page.screenshot({ path: `hnhost_claim_success_${Date.now()}.png`, fullPage: true });
-
         } else {
-            // 保存调试截图
             await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true });
             console.log('💾 已保存调试截图 hnhost_debug_*.png');
-
-            // 打印“其他操作”区域内容帮助调试
-            const otherSection = await page.locator('text=其他操作').locator('..').innerText().catch(() => '无法获取');
-            console.log('其他操作区域文字：', otherSection);
-
             status = '未找到领取奖励按钮（可能今日已领取）';
             console.log('❌ ' + status);
         }
