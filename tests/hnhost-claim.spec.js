@@ -7,7 +7,7 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GOST_PROXY = process.env.GOST_PROXY;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
-const TIMEOUT = 150000;
+const TIMEOUT = 120000;
 
 function nowStr() {
     return new Date().toLocaleString('zh-CN', {
@@ -87,64 +87,39 @@ test('HnHost 每日领取金币', async () => {
     let points = '';
 
     try {
-        console.log('🌐 打开 HnHost 登录首页...');
-        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
+        console.log('🌐 直接尝试 Token 登录...');
 
-        // 加强蓝色按钮点击（适配繁体 + 不同文字）
-        console.log('🔵 尝试点击「透过 Discord 登录用户平台」蓝色按钮...');
-        const blueBtnSelectors = [
-            'button:has-text("透過 Discord")',
-            'button:has-text("透过 Discord")',
-            'button:has-text("Discord")',
-            'text=透過 Discord',
-            'text=透过 Discord',
-            'text=登录'
-        ];
+        // 直接使用别人常用的直达授权链接
+        const authUrl = "https://discord.com/login?redirect_to=%2Foauth2%2Fauthorize%3Fscope%3Dguilds%2Bguilds.join%2Bidentify%2Bemail%26client_id%3D933437142254887052%26redirect_uri%3Dhttps%253A%252F%252Fclient.hnhost.net%252Flogin%26response_type%3Dcode%26prompt%3Dnone";
 
-        let clicked = false;
-        for (const sel of blueBtnSelectors) {
-            const btn = page.locator(sel).first();
-            if (await btn.isVisible({ timeout: 8000 }).catch(() => false)) {
-                console.log(`找到按钮: ${sel}`);
-                await btn.scrollIntoViewIfNeeded();
-                await btn.click({ delay: 1000 });
-                clicked = true;
-                console.log('✅ 已点击蓝色 Discord 登录按钮');
-                break;
-            }
-        }
+        await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        if (!clicked) {
-            console.log('⚠️ 所有选择器均未找到蓝色按钮');
-            await page.screenshot({ path: 'debug-homepage.png', fullPage: true });
-        }
-
-        await page.waitForTimeout(10000);
-
-        // Token 注入
-        console.log('🔑 注入 Discord Token...');
+        // 加强 Token 注入
         await page.evaluate((token) => {
             const timer = setInterval(() => {
                 try {
                     const iframe = document.createElement('iframe');
                     document.body.appendChild(iframe);
                     iframe.contentWindow.localStorage.token = `"${token}"`;
+                    localStorage.setItem('token', `"${token}"`);
                 } catch (e) {}
             }, 50);
-            setTimeout(() => clearInterval(timer), 8000);
+            setTimeout(() => clearInterval(timer), 10000);
         }, DISCORD_TOKEN);
 
-        await page.waitForTimeout(12000);
+        await page.waitForTimeout(15000);
 
         console.log('⏳ 等待授权跳转...');
 
+        // 等待成功登录的标志
         await page.waitForURL(url => url.href.includes('client.hnhost.net') && !url.href.includes('/login'), 
-            { timeout: 40000 }).catch(() => {
+            { timeout: 50000 }).catch(() => {
             console.log('⚠️ 等待超时，强制跳转领取页面');
         });
 
         console.log('✅ 当前 URL:', page.url());
 
+        // 跳转领取页面
         console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
             waitUntil: 'networkidle',
@@ -155,7 +130,7 @@ test('HnHost 每日领取金币', async () => {
 
         console.log('🔍 检测领取奖励按钮...');
 
-        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
+        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励, button:has-text("领取")').first();
 
         if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
             console.log('🎁 点击领取奖励按钮...');
@@ -163,7 +138,7 @@ test('HnHost 每日领取金币', async () => {
             await claimButton.click({ delay: 1000 });
             await page.waitForTimeout(10000);
 
-            points = await page.locator('text=获得|成功|HNRC').first().innerText().catch(() => '+10 HNRC');
+            points = await page.locator('text=获得|成功|HNRC|金币').first().innerText().catch(() => '+10 HNRC');
             status = `领取成功！${points}`;
         } else {
             status = '未找到领取奖励按钮（可能今日已领取）';
