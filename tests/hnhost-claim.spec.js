@@ -71,7 +71,7 @@ async function sendTGReport(page, result) {
     });
 }
 
-// ====================== Token 注入（保持原逻辑，稍微优化） ======================
+// ====================== Token 注入 ======================
 async function handleDiscordLoginWithToken(page, token) {
     console.log('[*] 正在通过直达链接执行 Token 强制同步注入...');
 
@@ -141,58 +141,42 @@ test('HnHost 每日领取金币', async () => {
 
         await handleDiscordLoginWithToken(page, DISCORD_TOKEN);
 
-        // === 关键修复：尝试进入控制面板 ===
-        console.log('🌐 跳转到 HnHost 控制面板...');
-        
-        const dashboardUrls = [
-            'https://client.hnhost.net/dashboard',
-            'https://client.hnhost.net/panel',
-            'https://client.hnhost.net/',
-        ];
+        // ==================== 方案一核心修复：使用首页 + 加强等待 ====================
+        console.log('🌐 跳转到 HnHost 首页...');
+        await page.goto('https://client.hnhost.net/', { 
+            waitUntil: 'networkidle', 
+            timeout: 60000 
+        });
 
-        let entered = false;
-        for (const url of dashboardUrls) {
-            try {
-                await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
-                await page.waitForTimeout(8000);
-                
-                // 等待动态加载完成
-                await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-                await page.waitForTimeout(5000);
+        // 等待页面动态内容完全加载
+        await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+        await page.waitForTimeout(12000);   // 给“正在载入...”足够时间消失
 
-                // 滚动到底部，确保“其他操作”区域加载
-                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                await page.waitForTimeout(3000);
-
-                entered = true;
-                console.log(`✅ 已进入页面: ${url}`);
-                break;
-            } catch (e) {
-                console.log(`⚠️ 跳转 ${url} 失败，尝试下一个...`);
-            }
-        }
-
-        if (!entered) {
-            throw new Error('无法进入控制面板');
-        }
-
-        // 如果有 Discord 登录按钮，点击
+        // 如果还有 Discord 登录按钮，点击一下
         const discordBtn = page.locator('button:has-text("Discord"), text=通过 Discord, text=登录').first();
-        if (await discordBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+        if (await discordBtn.isVisible({ timeout: 8000 }).catch(() => false)) {
             console.log('🔗 点击 Discord 登录按钮...');
             await discordBtn.click();
             await page.waitForTimeout(10000);
         }
 
+        // 滚动到底部多次，确保“其他操作”区域的领取按钮加载出来
+        console.log('📜 滚动到页面底部...');
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await page.waitForTimeout(4000);
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await page.waitForTimeout(4000);
+
         console.log('🪙 检测领取奖励按钮...');
 
-        // 更可靠的选择器（推荐方式）
+        // 更可靠的选择器
         const claimButton = page.getByRole('button', { name: /领取奖励/i })
             .or(page.locator('button:has-text("领取奖励")'))
             .or(page.locator('text=领取奖励'))
+            .or(page.locator('text=領取獎勵'))
             .first();
 
-        // 等待按钮出现（最多25秒）
+        // 等待按钮可见
         const isVisible = await claimButton.waitFor({ state: 'visible', timeout: 25000 })
             .then(() => true)
             .catch(() => false);
@@ -200,18 +184,19 @@ test('HnHost 每日领取金币', async () => {
         if (isVisible) {
             console.log('🎁 找到领取奖励按钮，准备点击...');
             await claimButton.scrollIntoViewIfNeeded();
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(1500);
             await claimButton.click({ delay: 800 });
 
             await page.waitForTimeout(8000);
 
-            // 检查是否领取成功
-            const successText = await page.locator('text=获得|成功|HN Points|金币|+10|领取成功')
+            // 检查领取结果
+            const successText = await page.locator('text=获得|成功|HN Points|金币|+10|领取成功|已领取')
                 .first().innerText().catch(() => '领取完成');
 
             status = `领取成功！ ${successText}`;
             console.log(`✅ ${status}`);
         } else {
+            // 失败时保存全页截图
             await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true }).catch(() => {});
             status = '未找到领取奖励按钮（可能今日已领取 或 页面加载不完整）';
             console.log('❌ ' + status);
