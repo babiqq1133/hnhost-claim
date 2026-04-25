@@ -71,33 +71,36 @@ async function sendTGReport(page, result) {
     });
 }
 
-// Token 注入（保持不变）
-async function handleDiscordLoginWithToken(page, token) {
-    console.log('[*] 正在通过直达链接执行 Token 强制同步注入...');
-    await page.context().clearCookies();
+// ==================== 优化后的登录函数 ====================
+async function handleDiscordLogin(page, discordToken) {
+    console.log('🔑 开始 Discord 登录流程...');
 
-    const DIRECT_AUTH_URL = "https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join";
+    const authorizeUrl = "https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join";
 
-    await page.goto(DIRECT_AUTH_URL, { waitUntil: 'networkidle', timeout: 45000 });
+    await page.goto(authorizeUrl, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(8000);
 
-    console.log('💉 开始注入 Token...');
-    await page.evaluate((t) => {
-        const injectToken = () => {
+    console.log('⏳ 等待 OAuth2 回调...');
+
+    // 等待回调（带 code 参数）
+    try {
+        await page.waitForURL('**/discord.php?code=*', { timeout: 25000 });
+        console.log('✅ OAuth2 回调成功，拿到 code');
+    } catch (e) {
+        console.log('⚠️ 未检测到 code 回调，尝试 Token 注入回退...');
+        await page.evaluate((t) => {
             try {
                 if (typeof localStorage !== "undefined") localStorage.setItem("token", `"${t}"`);
-                if (typeof sessionStorage !== "undefined") sessionStorage.setItem("token", `"${t}"`);
-                window.token = t; window.discordToken = t;
                 document.cookie = `token=${encodeURIComponent(t)}; path=/; max-age=3600`;
             } catch (err) {}
-        };
-        injectToken();
-        for (let i = 1; i <= 6; i++) setTimeout(injectToken, i * 500);
-        setTimeout(() => location.reload(), 6000);
-    }, token);
+        }, discordToken);
+        await page.reload({ waitUntil: 'networkidle' });
+    }
 
-    await page.waitForTimeout(18000);
-    console.log('✅ Token 注入阶段完成');
+    await page.waitForTimeout(5000);
+    await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
+    
+    console.log('✅ 登录 Session 建立完成');
 }
 
 // 主测试
@@ -106,7 +109,7 @@ test('HnHost 每日领取金币', async () => {
     if (!DISCORD_TOKEN) throw new Error('❌ 缺少 DISCORD_TOKEN 配置');
 
     const browser = await chromium.launch({
-        headless: true,
+        headless: true,        // 调试时可改为 false
         proxy: process.env.GOST_PROXY ? { server: process.env.GOST_PROXY } : undefined,
     });
 
@@ -122,62 +125,62 @@ test('HnHost 每日领取金币', async () => {
             console.log(`✅ 出口 IP 确认：${await res.text()}`);
         } catch (e) {}
 
-        await handleDiscordLoginWithToken(page, DISCORD_TOKEN);
+        await handleDiscordLogin(page, DISCORD_TOKEN);
 
-        console.log('🌐 跳转到 HnHost 首页...');
-        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
-        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(10000);
-
-        // 点击伺服器面板
+        // 点击伺服器面板入口（如果需要）
         console.log('🔍 点击伺服器面板入口...');
         const panelLink = page.locator('text=伺服器面板').first();
         if (await panelLink.isVisible({ timeout: 10000 }).catch(() => false)) {
             await panelLink.click();
-            await page.waitForTimeout(8000);
-            await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-        }
-
-        // 尝试返回主仪表盘（关键）
-        console.log('🔄 尝试返回主仪表盘...');
-        const dashboardLinks = page.locator('text=主頁, text=首页, text=仪表盘, text=控制面板, text=Dashboard').first();
-        if (await dashboardLinks.isVisible({ timeout: 8000 }).catch(() => false)) {
-            await dashboardLinks.click();
-            await page.waitForTimeout(8000);
-        }
-
-        // 多轮滚动到底部（领取按钮在最下方）
-        console.log('📜 多轮滚动到底部，确保按钮出现...');
-        for (let i = 0; i < 5; i++) {
-            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
             await page.waitForTimeout(5000);
+        }
+
+        // 确保回到主仪表盘
+        console.log('🔄 返回主仪表盘...');
+        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle' });
+
+        // 显示当前金币（可选调试）
+        const currentPoints = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
+        console.log(`💰 当前金币: ${currentPoints}`);
+
+        // 多轮滚动到底部 + 等待
+        console.log('📜 多轮滚动到底部，确保按钮出现...');
+        for (let i = 0; i < 6; i++) {
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page.waitForTimeout(3000);
         }
 
         console.log('🪙 检测领取奖励按钮...');
 
-        // 针对你截图的精准选择器
-        const claimButton = page.locator('button:has-text("领取奖励")')
+        // 加强版按钮定位（适配你截图中的“领取奖励”）
+        const claimButton = page.locator('button')
+            .filter({ hasText: /领取奖励|领取每日签到奖励|签到奖励/i })
             .or(page.getByRole('button', { name: /领取奖励/i }))
-            .or(page.locator('text=领取每日登录奖励'))
+            .or(page.getByText(/领取奖励/))
             .first();
 
-        const isVisible = await claimButton.waitFor({ state: 'visible', timeout: 30000 })
-            .then(() => true)
-            .catch(() => false);
+        let buttonFound = false;
+        try {
+            await claimButton.waitFor({ state: 'visible', timeout: 20000 });
+            buttonFound = await claimButton.count() > 0;
+        } catch (e) {}
 
-        if (isVisible) {
+        if (buttonFound) {
             console.log('🎁 找到领取奖励按钮，点击...');
             await claimButton.scrollIntoViewIfNeeded();
-            await page.waitForTimeout(2000);
-            await claimButton.click({ delay: 1000 });
+            await page.waitForTimeout(1500);
+            await claimButton.click({ delay: 800 });
 
-            await page.waitForTimeout(10000);
+            await page.waitForTimeout(8000); // 等待页面刷新/提示出现
 
-            const successText = await page.locator('text=获得|成功|HN Points|金币|+10|领取成功')
-                .first().innerText().catch(() => '领取完成');
-
-            status = `领取成功！ ${successText}`;
+            // 检查成功提示
+            const success = await page.locator('text=/获得|成功|HN Points|金币|\+10|领取成功/i').first().isVisible().catch(() => false);
+            
+            status = success ? '领取成功！ +10 HNRC' : '按钮已点击（未检测到明确成功提示）';
             console.log(`✅ ${status}`);
+
+            // 保存结果截图
+            await page.screenshot({ path: `hnhost_claim_success_${Date.now()}.png`, fullPage: true });
         } else {
             await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true });
             console.log('💾 已保存调试截图 hnhost_debug_*.png');
