@@ -71,7 +71,7 @@ async function sendTGReport(page, result) {
     });
 }
 
-// 登录函数（优化版）
+// ==================== 登录函数 ====================
 async function handleDiscordLogin(page, discordToken) {
     console.log('🔑 开始 Discord 登录流程...');
 
@@ -101,7 +101,7 @@ async function handleDiscordLogin(page, discordToken) {
     console.log('✅ 登录 Session 建立完成');
 }
 
-// 主测试
+// ==================== 主测试 ====================
 test('HnHost 每日领取金币', async () => {
     test.setTimeout(TIMEOUT);
     if (!DISCORD_TOKEN) throw new Error('❌ 缺少 DISCORD_TOKEN 配置');
@@ -127,43 +127,58 @@ test('HnHost 每日领取金币', async () => {
         await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 30000 });
 
         // 获取当前金币
-        const currentGold = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
+        const currentGold = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
         console.log(`💰 当前金币: ${currentGold}`);
 
-        // 多轮滚动到底部
+        // 多轮滚动到底部（类似 ByteNut 的稳健做法）
         console.log('📜 多轮滚动到底部，确保按钮出现...');
         for (let i = 0; i < 6; i++) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(3500);
         }
 
-        console.log('🪙 检测领取奖励按钮...');
+        console.log('🪙 检测领取奖励按钮状态...');
 
-        // === 按照你要求精确写法：每日领取登录/签到奖励 + 按钮“领取奖励” ===
-        const claimButton = page.getByRole('button', { name: /领取奖励/i })
-            .or(page.locator('button:has-text("领取奖励")'))
-            .or(page.locator('text=领取每日签到奖励').locator('..').locator('button'))
-            .or(page.locator('text=领取每日登录奖励').locator('..').locator('button'))
-            .first();
+        // === 核心点击逻辑（参考 ByteNut 风格）===
+        const extendButtonXPath = "//button[contains(., '领取奖励')] | //button[contains(text(), '领取奖励')]";
+        
+        // 先尝试 Playwright 原生方式
+        let claimButton = page.locator('button').filter({ hasText: /领取奖励|领取每日签到奖励|领取每日登录奖励/i }).first();
 
-        const isVisible = await claimButton.isVisible({ timeout: 15000 }).catch(() => false);
+        const buttonCount = await claimButton.count();
 
-        if (isVisible) {
-            console.log('🎁 点击「领取奖励」按钮...');
+        if (buttonCount > 0) {
+            console.log('🎁 找到「领取奖励」按钮');
+
+            // 滚动到可见位置
             await claimButton.scrollIntoViewIfNeeded();
             await page.waitForTimeout(1500);
-            await claimButton.click({ delay: 800 });
 
-            await page.waitForTimeout(8000); // 等待刷新
+            console.log('🖱️ 点击「领取奖励」按钮...');
+            
+            // 使用 JS 点击（更稳，类似 ByteNut 的 js_click）
+            await page.evaluate(() => {
+                const btns = document.querySelectorAll('button');
+                for (let btn of btns) {
+                    if (btn.innerText.includes('领取奖励')) {
+                        btn.scrollIntoView({ block: 'center' });
+                        btn.click();
+                        return;
+                    }
+                }
+            });
 
-            // 验证领取结果
-            const newGold = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
+            await page.waitForTimeout(10000); // 等待页面刷新和金币更新
+
+            // 验证结果
+            const newGold = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
             console.log(`🏆 最新金币: ${newGold}`);
 
             status = '领取成功！ +10 HNRC';
             console.log(`🎉 ${status}`);
-            
+
             await page.screenshot({ path: `hnhost_claim_success_${Date.now()}.png`, fullPage: true });
+
         } else {
             await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true });
             console.log('💾 已保存调试截图 hnhost_debug_*.png');
