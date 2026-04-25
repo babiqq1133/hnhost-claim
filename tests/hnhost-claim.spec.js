@@ -28,7 +28,6 @@ function escapeHtml(text) {
         .replace(/'/g, "&#039;");
 }
 
-// TG 推送
 async function sendTGReport(page, result) {
     if (!TG_CHAT_ID || !TG_TOKEN) {
         console.log('⚠️ TG_BOT 未配置，跳过推送');
@@ -80,7 +79,6 @@ async function sendTGReport(page, result) {
     });
 }
 
-// Token 登录函数（已修复变量错误）
 async function handleDiscordLoginWithToken(page, token) {
     const DIRECT_AUTH_URL = "https://discord.com/login?redirect_to=%2Foauth2%2Fauthorize%3Fscope%3Dguilds%2Bguilds.join%2Bidentify%2Bemail%26client_id%3D933437142254887052%26redirect_uri%3Dhttps%253A%252F%252Fclient.hnhost.net%252Flogin%26response_type%3Dcode%26prompt%3Dnone";
 
@@ -101,8 +99,8 @@ async function handleDiscordLoginWithToken(page, token) {
                 location.reload();
             }, 3000);
         };
-        injector(t);   // 这里已经修正为正确的参数
-    }, token);   // 传递 token 参数
+        injector(t);
+    }, token);
 
     await page.waitForTimeout(15000);
 }
@@ -128,6 +126,8 @@ test('HnHost 每日领取金币', async () => {
     const page = await browser.newPage();
     page.setDefaultTimeout(TIMEOUT);
 
+    let status = '执行中';   // ← 这里必须先声明 status
+
     try {
         console.log('🌐 验证出口 IP...');
         try {
@@ -138,7 +138,6 @@ test('HnHost 每日领取金币', async () => {
             console.log('⚠️ IP 验证超时，跳过');
         }
 
-        // Token 登录
         await handleDiscordLoginWithToken(page, DISCORD_TOKEN);
 
         console.log('🌐 跳转到领取页面...');
@@ -166,7 +165,8 @@ test('HnHost 每日领取金币', async () => {
 
     } catch (e) {
         console.log(`❌ 异常: ${e.message}`);
-        await sendTGReport(page, `脚本异常: ${e.message}`);
+        status = `脚本异常: ${e.message}`;
+        await sendTGReport(page, status);
         throw e;
     } finally {
         await browser.close();
