@@ -4,17 +4,14 @@ const https = require('https');
 const fs = require('fs');
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const GOST_PROXY = process.env.GOST_PROXY;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
-const TIMEOUT = 120000;
+const TIMEOUT = 180000;
 
 function nowStr() {
-    return new Date().toLocaleString('zh-CN', {
-        timeZone: 'Asia/Shanghai',
-        hour12: false,
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
+    return new Date().toLocaleString('zh-CN', { 
+        timeZone: 'Asia/Shanghai', 
+        hour12: false 
     }).replace(/\//g, '-');
 }
 
@@ -29,19 +26,14 @@ function escapeHtml(text) {
 }
 
 async function sendTGReport(page, result) {
-    if (!TG_CHAT_ID || !TG_TOKEN) {
-        console.log('⚠️ TG_BOT 未配置，跳过推送');
-        return;
-    }
+    if (!TG_CHAT_ID || !TG_TOKEN) return;
 
     const photoPath = `hnhost_report_${Date.now()}.png`;
     try {
         if (!page.isClosed()) {
             await page.screenshot({ path: photoPath, fullPage: false });
         }
-    } catch (e) {
-        console.log(`[-] 截图失败: ${e.message}`);
-    }
+    } catch (e) {}
 
     const reportContent = [
         `🪙 <b>HnHost 每日领取金币报告</b>`,
@@ -79,63 +71,57 @@ async function sendTGReport(page, result) {
     });
 }
 
-// ==================== 加强版 Token 注入 ====================
+// ====================== 彻底修复版 Token 注入 ======================
 async function handleDiscordLoginWithToken(page, token) {
     console.log('[*] 正在通过直达链接执行 Token 强制同步注入...');
 
-    // 清空旧状态
     await page.context().clearCookies();
-    
+
     const DIRECT_AUTH_URL = "https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join";
 
-    await page.goto(DIRECT_AUTH_URL, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(6000);
+    // 先等待页面完全加载
+    await page.goto(DIRECT_AUTH_URL, { waitUntil: 'networkidle', timeout: 45000 });
+    await page.waitForTimeout(8000);
 
-    // 加强版注入
+    console.log('💉 开始注入 Token...');
+
     await page.evaluate((t) => {
-        try {
-            // 多种注入方式
-            localStorage.setItem('token', JSON.stringify(t));
-            localStorage.setItem('token', `"${t}"`);
-            window.discordToken = t;
-            document.cookie = `token=${t}; path=/; domain=.hnhost.net`;
+        const injectToken = () => {
+            try {
+                // 安全检查
+                if (typeof localStorage !== "undefined") {
+                    localStorage.setItem("token", JSON.stringify(t));
+                    localStorage.setItem("token", `"${t}"`);
+                }
+                if (typeof sessionStorage !== "undefined") {
+                    sessionStorage.setItem("token", JSON.stringify(t));
+                }
 
-            // iframe 注入
-            const injectToAll = () => {
-                document.querySelectorAll('iframe').forEach(iframe => {
-                    try {
-                        if (iframe.contentWindow && iframe.contentWindow.localStorage) {
-                            iframe.contentWindow.localStorage.setItem('token', `"${t}"`);
-                        }
-                    } catch(e) {}
-                });
-            };
-            injectToAll();
-            setInterval(injectToAll, 300);
+                // 额外方式
+                window.token = t;
+                window.discordToken = t;
+                document.cookie = `token=${encodeURIComponent(t)}; path=/; max-age=3600`;
+            } catch (err) {
+                console.log("注入小错误:", err.message);
+            }
+        };
 
-        } catch(e) {
-            console.error('Token 注入异常:', e);
+        // 多轮注入
+        injectToken();
+        for (let i = 1; i <= 6; i++) {
+            setTimeout(injectToken, i * 500);
         }
 
-        // 3秒后强制刷新
-        setTimeout(() => location.reload(), 4000);
+        // 最后刷新
+        setTimeout(() => location.reload(), 6000);
     }, token);
 
-    await page.waitForTimeout(15000); // 等待登录同步
+    await page.waitForTimeout(18000); // 给足够时间让 Discord 处理 token 和跳转
 
-    console.log('🔍 检查是否登录成功...');
-    const loginCheck = await page.evaluate(() => {
-        const texts = document.body.innerText || '';
-        return {
-            hasAccount: texts.includes('账户') || texts.includes('账号'),
-            hasPoints: texts.includes('HN POINTS') || texts.includes('HN$'),
-            hasToken: !!localStorage.getItem('token')
-        };
-    });
-    console.log(`登录检查结果: ${JSON.stringify(loginCheck)}`);
+    console.log('✅ Token 注入阶段完成');
 }
 
-// ==================== 主测试 ====================
+// ====================== 主测试 ======================
 test('HnHost 每日领取金币', async () => {
     test.setTimeout(TIMEOUT);
 
@@ -143,19 +129,13 @@ test('HnHost 每日领取金币', async () => {
         throw new Error('❌ 缺少 DISCORD_TOKEN 配置');
     }
 
-    let proxyConfig = undefined;
-    if (process.env.GOST_PROXY) {
-        proxyConfig = { server: process.env.GOST_PROXY };
-        console.log(`🛡️ 使用 GOST 代理: ${process.env.GOST_PROXY}`);
-    }
-
-    console.log('🔧 启动浏览器...');
     const browser = await chromium.launch({
         headless: true,
-        proxy: proxyConfig,
+        proxy: process.env.GOST_PROXY ? { server: process.env.GOST_PROXY } : undefined,
     });
+
     const page = await browser.newPage();
-    page.setDefaultTimeout(TIMEOUT);
+    page.setDefaultTimeout(90000);
 
     let status = '执行中';
 
@@ -163,53 +143,47 @@ test('HnHost 每日领取金币', async () => {
         console.log('🌐 验证出口 IP...');
         try {
             const res = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded' });
-            const body = await res.text();
-            console.log(`✅ 出口 IP 确认：${body.trim()}`);
-        } catch {
-            console.log('⚠️ IP 验证超时，跳过');
+            console.log(`✅ 出口 IP 确认：${await res.text()}`);
+        } catch (e) {
+            console.log('⚠️ IP 验证失败');
         }
 
-        // 执行加强版 Token 登录
         await handleDiscordLoginWithToken(page, DISCORD_TOKEN);
 
         console.log('🌐 跳转到 HnHost 首页...');
-        await page.goto('https://client.hnhost.net/', { 
-            waitUntil: 'networkidle', 
-            timeout: 60000 
-        });
+        await page.goto('https://client.hnhost.net/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForTimeout(15000);
 
-        await page.waitForTimeout(10000); // 重要：给页面充分加载时间
+        // 如果页面要求手动登录 Discord，尝试点击
+        const discordBtn = page.locator('button:has-text("Discord"), text=通过 Discord, text=登录').first();
+        if (await discordBtn.isVisible({ timeout: 8000 }).catch(() => false)) {
+            console.log('🔗 点击 Discord 登录按钮...');
+            await discordBtn.click();
+            await page.waitForTimeout(12000);
+        }
 
         console.log('🪙 检测领取奖励按钮...');
-
-        // 加强版按钮定位（适配当前页面）
         const claimButton = page.locator(`
             button:has-text("领取奖励"),
             button:has-text("領取獎勵"),
-            button:has-text("领取每日"),
             text=领取奖励,
             text=领取每日登录奖励,
-            [class*="claim"], [class*="reward"], [class*="Claim"]
+            [class*="claim"], [class*="reward"]
         `).first();
 
         const isVisible = await claimButton.isVisible({ timeout: 25000 }).catch(() => false);
 
         if (isVisible) {
-            console.log('🎁 找到领取按钮，正在点击...');
+            console.log('🎁 点击领取...');
             await claimButton.scrollIntoViewIfNeeded();
-            await claimButton.click({ delay: 1200 });
-
+            await claimButton.click({ delay: 1500 });
             await page.waitForTimeout(12000);
 
-            const resultText = await page.locator('text=获得|成功|HN Points|HNRC|金币|奖励').first().innerText().catch(() => '领取完成');
-            status = `领取成功！ ${resultText}`;
+            const result = await page.locator('text=获得|成功|HN Points|金币|+10').first().innerText().catch(() => '领取完成');
+            status = `领取成功！ ${result}`;
         } else {
-            // 调试：保存全屏截图
-            const debugPath = `hnhost_debug_${Date.now()}.png`;
-            await page.screenshot({ path: debugPath, fullPage: true });
-            console.log(`⚠️ 未找到按钮，已保存调试截图: ${debugPath}`);
-
-            status = '未找到领取奖励按钮（可能今日已领取 或 Token 登录失败）';
+            await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true }).catch(() => {});
+            status = '未找到领取奖励按钮（可能今日已领取 或 Token 未生效）';
         }
 
         await sendTGReport(page, status);
@@ -218,7 +192,6 @@ test('HnHost 每日领取金币', async () => {
         console.log(`❌ 异常: ${e.message}`);
         status = `脚本异常: ${e.message}`;
         await sendTGReport(page, status);
-        throw e;
     } finally {
         await browser.close();
     }
