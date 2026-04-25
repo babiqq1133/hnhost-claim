@@ -101,7 +101,7 @@ test('HnHost 每日领取金币', async () => {
 
         // 添加 state 参数（推荐，增加安全性）
         const state = Math.random().toString(36).substring(2, 15);
-        const authUrl = `https://client.hnhost.net/backend/pdo/discord.php`;
+        const authUrl = `https://discord.com/api/v9/oauth2/authorize?client_id=977981235618021377&response_type=code&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&scope=identify%20email%20guilds%20guilds.join`;
 
         await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
