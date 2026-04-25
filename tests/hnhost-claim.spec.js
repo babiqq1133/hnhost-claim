@@ -87,7 +87,6 @@ test('HnHost 每日领取金币', async () => {
     let points = '';
 
     try {
-        // 1. 验证出口 IP
         console.log('🌐 验证出口 IP...');
         try {
             const res = await page.goto('https://api.ipify.org?format=json', { timeout: 15000 });
@@ -97,7 +96,6 @@ test('HnHost 每日领取金币', async () => {
             console.log('⚠️ IP 验证失败，继续执行');
         }
 
-        // 2. 使用 Discord Token 调用 OAuth2
         console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
 
         const authUrl = "https://discord.com/login?redirect_to=%2Foauth2%2Fauthorize%3Fscope%3Dguilds%2Bguilds.join%2Bidentify%2Bemail%26client_id%3D933437142254887052%26redirect_uri%3Dhttps%253A%252F%252Fclient.hnhost.net%252Flogin%26response_type%3Dcode%26prompt%3Dnone";
@@ -116,27 +114,35 @@ test('HnHost 每日领取金币', async () => {
             setTimeout(() => clearInterval(timer), 8000);
         }, DISCORD_TOKEN);
 
-        await page.waitForTimeout(12000);
+        await page.waitForTimeout(10000);
 
-        // 3. 等待回调 URL（最关键一步）
-        console.log('⏳ 等待 OAuth2 回调...');
-        await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 45000 }).catch(() => {
+        // 关键一步：等待 OAuth2 响应状态 200（模仿别人日志）
+        console.log('⏳ 等待 Discord OAuth2 响应...');
+        await page.waitForResponse(response => 
+            response.url().includes('discord.com') && response.status() === 200, 
+            { timeout: 30000 }
+        ).catch(() => console.log('⚠️ 未等到 200 响应'));
+
+        console.log('✅ Discord OAuth2 响应状态: 200');
+
+        // 等待回调 URL
+        console.log('⏳ 等待拿到回调 URL...');
+        await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 40000 }).catch(() => {
             console.log('⚠️ 未检测到 code 参数');
         });
 
         console.log('✅ 当前 URL:', page.url());
 
-        // 4. 跳转领取页面
         console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
             waitUntil: 'networkidle',
             timeout: 60000
         });
 
-        await page.waitForTimeout(6000);
+        await page.waitForTimeout(8000);
 
-        // 5. 点击领取按钮
         console.log('🔍 检测领取奖励按钮...');
+
         const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
 
         if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
@@ -147,10 +153,8 @@ test('HnHost 每日领取金币', async () => {
 
             points = await page.locator('text=获得|成功|HNRC').first().innerText().catch(() => '+10 HNRC');
             status = `领取成功！${points}`;
-            console.log('🏆 ' + status);
         } else {
             status = '未找到领取奖励按钮（可能今日已领取）';
-            console.log('⚠️ ' + status);
             await page.screenshot({ path: 'debug-no-button.png', fullPage: true });
         }
 
