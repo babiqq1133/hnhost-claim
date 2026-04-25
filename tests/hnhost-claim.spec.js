@@ -71,7 +71,7 @@ async function sendTGReport(page, result) {
     });
 }
 
-// ==================== 优化后的登录函数 ====================
+// ==================== 登录函数（已优化） ====================
 async function handleDiscordLogin(page, discordToken) {
     console.log('🔑 开始 Discord 登录流程...');
 
@@ -82,10 +82,9 @@ async function handleDiscordLogin(page, discordToken) {
 
     console.log('⏳ 等待 OAuth2 回调...');
 
-    // 等待回调（带 code 参数）
     try {
         await page.waitForURL('**/discord.php?code=*', { timeout: 25000 });
-        console.log('✅ OAuth2 回调成功，拿到 code');
+        console.log('✅ OAuth2 回调成功');
     } catch (e) {
         console.log('⚠️ 未检测到 code 回调，尝试 Token 注入回退...');
         await page.evaluate((t) => {
@@ -109,7 +108,7 @@ test('HnHost 每日领取金币', async () => {
     if (!DISCORD_TOKEN) throw new Error('❌ 缺少 DISCORD_TOKEN 配置');
 
     const browser = await chromium.launch({
-        headless: true,        // 调试时可改为 false
+        headless: true,   // 调试时可改为 false
         proxy: process.env.GOST_PROXY ? { server: process.env.GOST_PROXY } : undefined,
     });
 
@@ -137,53 +136,58 @@ test('HnHost 每日领取金币', async () => {
 
         // 确保回到主仪表盘
         console.log('🔄 返回主仪表盘...');
-        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle' });
+        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 30000 });
 
-        // 显示当前金币（可选调试）
-        const currentPoints = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
-        console.log(`💰 当前金币: ${currentPoints}`);
+        // 显示当前金币
+        const currentPointsText = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
+        console.log(`💰 当前金币: ${currentPointsText}`);
 
-        // 多轮滚动到底部 + 等待
+        // 多轮滚动到底部
         console.log('📜 多轮滚动到底部，确保按钮出现...');
         for (let i = 0; i < 6; i++) {
             await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(3000);
+            await page.waitForTimeout(4000);
         }
 
         console.log('🪙 检测领取奖励按钮...');
 
-        // 加强版按钮定位（适配你截图中的“领取奖励”）
+        // === 关键修复：精准匹配你截图中的按钮文字 ===
         const claimButton = page.locator('button')
             .filter({ hasText: /领取奖励|领取每日签到奖励|签到奖励/i })
-            .or(page.getByRole('button', { name: /领取奖励/i }))
-            .or(page.getByText(/领取奖励/))
+            .or(page.getByText('领取奖励', { exact: false }))
+            .or(page.getByText('领取每日签到奖励', { exact: false }))
             .first();
 
-        let buttonFound = false;
-        try {
-            await claimButton.waitFor({ state: 'visible', timeout: 20000 });
-            buttonFound = await claimButton.count() > 0;
-        } catch (e) {}
+        const buttonCount = await claimButton.count();
 
-        if (buttonFound) {
-            console.log('🎁 找到领取奖励按钮，点击...');
-            await claimButton.scrollIntoViewIfNeeded();
-            await page.waitForTimeout(1500);
-            await claimButton.click({ delay: 800 });
+        if (buttonCount > 0) {
+            console.log(`🎁 找到领取奖励按钮 (${buttonCount} 个)，准备点击...`);
+            
+            await claimButton.scrollIntoViewIfNeeded({ timeout: 10000 });
+            await page.waitForTimeout(2000);
+            
+            await claimButton.click({ delay: 1000 });
 
-            await page.waitForTimeout(8000); // 等待页面刷新/提示出现
+            await page.waitForTimeout(10000); // 等待领取后页面刷新
 
             // 检查成功提示
-            const success = await page.locator('text=/获得|成功|HN Points|金币|\+10|领取成功/i').first().isVisible().catch(() => false);
+            const successText = await page.locator('text=/获得|成功|HN Points|金币|\+10|领取成功/i')
+                .first().innerText().catch(() => '');
             
-            status = success ? '领取成功！ +10 HNRC' : '按钮已点击（未检测到明确成功提示）';
+            status = successText ? `领取成功！ ${successText}` : '领取成功！ +10 HN Points';
             console.log(`✅ ${status}`);
 
-            // 保存结果截图
             await page.screenshot({ path: `hnhost_claim_success_${Date.now()}.png`, fullPage: true });
+
         } else {
+            // 保存调试截图
             await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true });
             console.log('💾 已保存调试截图 hnhost_debug_*.png');
+
+            // 打印“其他操作”区域内容帮助调试
+            const otherSection = await page.locator('text=其他操作').locator('..').innerText().catch(() => '无法获取');
+            console.log('其他操作区域文字：', otherSection);
+
             status = '未找到领取奖励按钮（可能今日已领取）';
             console.log('❌ ' + status);
         }
