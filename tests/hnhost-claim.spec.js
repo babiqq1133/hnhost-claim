@@ -99,104 +99,90 @@ test('HnHost 每日领取金币', async () => {
 
         console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
 
-        // 添加 state 参数（推荐，增加安全性）
+        // 使用新的 Client ID
+        const clientId = '1497635385562628296';
         const state = Math.random().toString(36).substring(2, 15);
-        const authUrl = `https://discord.com/api/v9/oauth2/authorize?client_id=977981235618021377&response_type=code&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&scope=identify%20email%20guilds%20guilds.join`;
+        
+        const authUrl = `https://discord.com/oauth2/authorize?client_id=${clientId}&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join&state=${state}`;
 
         await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // ==================== 修复后的 Token 注入 ====================
+        // ==================== Token 注入 + 自动处理 ====================
         console.log('🔧 注入 Discord Token...');
-        
-        // 先等待页面基本加载
         await page.waitForLoadState('domcontentloaded');
 
         await page.evaluate((token) => {
             try {
-                // 主要注入方式 - localStorage
                 if (typeof localStorage !== 'undefined') {
                     localStorage.setItem('token', `"${token}"`);
-                    console.log('[注入成功] localStorage.token 已设置');
                 }
-
-                // 兼容注入方式
                 window.token = token;
                 window.__DISCORD_TOKEN__ = token;
-                window.localStorage?.setItem?.('token', `"${token}"`);
-
-                // 触发事件，让 Discord 脚本检测到
                 window.dispatchEvent(new Event('storage'));
-                window.dispatchEvent(new Event('message'));
             } catch (e) {
-                console.error('注入过程中发生错误:', e.message);
+                console.error('注入错误:', e.message);
             }
         }, DISCORD_TOKEN);
 
-        // 给 Discord 时间处理自动登录和授权
-        await page.waitForTimeout(8000);
+        await page.waitForTimeout(6000);
 
-        console.log('✅ Token 注入完成，等待 OAuth2 处理...');
+        console.log('⏳ 尝试自动处理登录/授权...');
 
-        // 等待 Discord OAuth2 响应
-        await page.waitForResponse(
-            response => response.url().includes('discord.com') && response.status() === 200,
-            { timeout: 45000 }
-        ).catch(() => console.log('⚠️ 未等到 200 响应'));
+        // 尝试点击登录按钮
+        try {
+            const loginBtn = page.locator('button:has-text("登录"), button:has-text("Log In"), [type="submit"]').first();
+            if (await loginBtn.isVisible({ timeout: 8000 }).catch(() => false)) {
+                console.log('🔘 点击登录按钮');
+                await loginBtn.click({ delay: 800 });
+                await page.waitForTimeout(7000);
+            }
+        } catch (e) {}
 
-        console.log('✅ Discord OAuth2 响应状态: 200');
+        // 尝试点击授权按钮
+        try {
+            const authBtn = page.locator('button:has-text("授权"), button:has-text("Authorize"), text=/授权|Authorize/i').first();
+            if (await authBtn.isVisible({ timeout: 15000 }).catch(() => false)) {
+                console.log('🔘 点击授权按钮');
+                await authBtn.click({ delay: 1000 });
+                await page.waitForTimeout(5000);
+            }
+        } catch (e) {}
 
-        // ==================== 关键：等待并提取 code ====================
-        console.log('⏳ 等待重定向到回调页面 (discord.php?code=...) ...');
+        // ==================== 等待并提取 code ====================
+        console.log('⏳ 等待回调 URL (discord.php?code=...) ...');
 
         let code = null;
-
-        try {
-            // 优先精确等待回调 URL
-            await page.waitForURL(/backend\/pdo\/discord\.php.*[?&]code=/, { timeout: 40000 });
-            console.log('✅ 已成功重定向到回调页面');
-        } catch (e) {
-            console.log('⚠️ 精确等待未命中，尝试从当前 URL 提取 code...');
-        }
-
-        // 从当前 URL 中提取 code（更可靠）
         const currentUrl = page.url();
-        console.log('📍 当前完整 URL:', currentUrl);
+        console.log('📍 当前 URL:', currentUrl);
 
         try {
-            const urlObj = new URL(currentUrl);
-            code = urlObj.searchParams.get('code');
-
-            // 如果还没拿到，可能是还在 Discord 的中间重定向页，再多等一会儿
-            if (!code && (currentUrl.includes('discord.com') || currentUrl.includes('redirect_to'))) {
-                console.log('仍在 Discord 页面，额外等待重定向...');
-                await page.waitForTimeout(6000);
-                const finalUrl = page.url();
-                console.log('📍 最终 URL:', finalUrl);
-                const finalUrlObj = new URL(finalUrl);
-                code = finalUrlObj.searchParams.get('code');
-            }
+            await page.waitForURL(/discord\.php.*code=/, { timeout: 30000 });
+            console.log('✅ 成功重定向到回调页面');
         } catch (e) {
-            console.log('⚠️ URL 解析失败:', e.message);
+            console.log('⚠️ 未精确匹配，尝试从 URL 提取 code...');
         }
+
+        try {
+            const urlObj = new URL(page.url());
+            code = urlObj.searchParams.get('code');
+        } catch (e) {}
 
         if (!code) {
-            console.log('❌ 未能获取到 OAuth code 参数！');
+            console.log('❌ 未获取到 OAuth code！');
             await page.screenshot({ path: 'debug-no-code.png', fullPage: true });
-            throw new Error('未获取到 OAuth code，请检查 Redirect URI 是否在 Discord 后台正确注册');
+            throw new Error('未获取到 OAuth code，请确认 Redirect URI 已保存');
         }
 
         console.log(`✅ 成功获取 code！长度: ${code.length}`);
 
-        // ==================== 继续执行领取逻辑 ====================
-        console.log('🌐 跳转到 HnHost 领取页面...');
+        // ==================== 领取金币 ====================
+        console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
             waitUntil: 'networkidle',
             timeout: 60000
         });
 
         await page.waitForTimeout(8000);
-
-        console.log('🔍 检测领取奖励按钮...');
 
         const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
 
