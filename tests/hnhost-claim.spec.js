@@ -8,19 +8,46 @@ const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GOST_PROXY = process.env.GOST_PROXY;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
-const TIMEOUT = 180000; // 加大超时
+const TIMEOUT = 180000;
 
-function nowStr() { /* 保持不变 */ }
-function escapeHtml(text) { /* 保持不变 */ }
-async function sendTGReport(page, status, points = '') { /* 保持不变 */ }
+function nowStr() {
+    return new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\//g, '-');
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    return text.toString().replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+async function sendTGReport(page, status, points = '') {
+    if (!TG_CHAT_ID || !TG_TOKEN) return;
+    const photoPath = `hnhost_claim_${Date.now()}.png`;
+    try { if (!page.isClosed()) await page.screenshot({ path: photoPath, fullPage: true }); } catch {}
+    const report = [`🪙 <b>HnHost 每日领取金币报告</b>`, `━━━━━━━━━━━━━━━━━━`, `👤 账户：<b><code>${escapeHtml(DISCORD_TOKEN ? DISCORD_TOKEN.substring(0, 25) + '...' : 'N/A')}</code></b>`, `📊 状态：${escapeHtml(status)}`, points ? `💰 本次获得：${points}` : '', `🕒 北京时间：<b><code>${escapeHtml(nowStr())}</code></b>`, `━━━━━━━━━━━━━━━━━━`].filter(Boolean).join('\n');
+
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('chat_id', TG_CHAT_ID);
+    form.append('caption', report);
+    form.append('parse_mode', 'HTML');
+    if (fs.existsSync(photoPath)) form.append('photo', fs.createReadStream(photoPath));
+
+    return new Promise((resolve) => {
+        const req = https.request({ method: 'POST', host: 'api.telegram.org', path: `/bot${TG_TOKEN}/sendPhoto`, headers: form.getHeaders() }, (res) => {
+            console.log(`📨 TG 推送状态: ${res.statusCode}`);
+            if (fs.existsSync(photoPath)) fs.unlinkSync(photoPath);
+            resolve();
+        });
+        req.on('error', () => resolve());
+        form.pipe(req);
+    });
+}
 
 test('HnHost 每日领取金币', async () => {
     test.setTimeout(TIMEOUT);
-
     if (!DISCORD_TOKEN) throw new Error('❌ DISCORD_TOKEN 未配置');
 
     const proxyConfig = GOST_PROXY ? { server: GOST_PROXY } : undefined;
-
     const browser = await chromium.launch({ headless: true, proxy: proxyConfig });
     const page = await browser.newPage();
     page.setDefaultTimeout(90000);
@@ -31,44 +58,35 @@ test('HnHost 每日领取金币', async () => {
     let points = '';
 
     try {
-        // IP 验证保持不变...
-
-        console.log('🔑 使用新 Client ID 调用 OAuth2...');
+        console.log('🔑 调用 OAuth2 授权...');
         const clientId = '1497635385562628296';
         const state = Math.random().toString(36).substring(2, 15);
 
-        // 添加 prompt=none 尝试跳过授权确认
-        const authUrl = `https://discord.com/oauth2/authorize?client_id=${clientId}&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join&state=${state}&prompt=none`;
+        // 使用 prompt=consent 强制显示授权页面，更容易触发跳转
+        const authUrl = `https://discord.com/oauth2/authorize?client_id=${clientId}&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join&state=${state}&prompt=consent`;
 
         await page.goto(authUrl, { waitUntil: 'networkidle', timeout: 60000 });
 
-        console.log('🔧 注入 Discord Token...');
+        console.log('🔧 注入 Token...');
         await page.evaluate((token) => {
             try {
                 localStorage.setItem('token', `"${token}"`);
                 window.token = token;
-                window.__DISCORD_TOKEN__ = token;
             } catch (e) {}
         }, DISCORD_TOKEN);
 
         await page.waitForTimeout(8000);
 
-        // 更强的按钮点击 + 刷新尝试
-        console.log('⏳ 尝试自动登录/授权...');
-        for (let i = 0; i < 2; i++) {
+        // 多次尝试点击授权按钮
+        console.log('⏳ 尝试点击授权按钮...');
+        for (let i = 0; i < 3; i++) {
             try {
-                await page.locator('button:has-text("登录"), button:has-text("Log In"), [type="submit"]').click({ timeout: 5000 }).catch(() => {});
-                await page.waitForTimeout(4000);
-            } catch {}
-            try {
-                await page.locator('button:has-text("授权"), button:has-text("Authorize")').click({ timeout: 8000 }).catch(() => {});
-                await page.waitForTimeout(5000);
+                await page.locator('button:has-text("授权"), button:has-text("Authorize"), text=/授权/i').click({ timeout: 10000 }).catch(() => {});
+                await page.waitForTimeout(6000);
             } catch {}
         }
 
-        await page.waitForTimeout(10000);
-
-        // 提取 code 的加强版
+        // 提取 code
         let code = null;
         console.log('📍 当前 URL:', page.url());
 
@@ -78,31 +96,18 @@ test('HnHost 每日领取金币', async () => {
         } catch (e) {}
 
         if (!code) {
-            console.log('仍在 Discord 页面，尝试刷新页面...');
-            await page.reload({ waitUntil: 'networkidle' });
-            await page.waitForTimeout(8000);
-            try {
-                const urlObj = new URL(page.url());
-                code = urlObj.searchParams.get('code');
-            } catch (e) {}
-        }
-
-        if (!code) {
-            console.log('❌ 仍未获取到 code');
-            await page.screenshot({ path: 'debug-no-code-final.png', fullPage: true });
-            throw new Error('未获取到 OAuth code，请确认 Redirect URI 已正确保存并生效');
+            await page.screenshot({ path: 'debug-no-code.png', fullPage: true });
+            throw new Error('仍未获取到 code，请检查 Redirect URI 是否完全正确并已保存');
         }
 
         console.log(`✅ 成功获取 code！长度: ${code.length}`);
 
-        // 后面领取逻辑保持不变...
+        // 领取部分保持不变
         console.log('🌐 跳转到领取页面...');
-        await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', { waitUntil: 'networkidle' });
-
+        await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', { waitUntil: 'networkidle', timeout: 60000 });
         await page.waitForTimeout(8000);
 
         const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
-
         if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
             await claimButton.click({ delay: 1000 });
             await page.waitForTimeout(10000);
