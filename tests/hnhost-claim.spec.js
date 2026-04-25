@@ -80,7 +80,7 @@ async function sendTGReport(page, result) {
 }
 
 async function handleDiscordLoginWithToken(page, token) {
-    const DIRECT_AUTH_URL = "https://discord.com/login?redirect_to=%2Foauth2%2Fauthorize%3Fscope%3Dguilds%2Bguilds.join%2Bidentify%2Bemail%26client_id%3D933437142254887052%26redirect_uri%3Dhttps%253A%252F%252Fclient.hnhost.net%252Flogin%26response_type%3Dcode%26prompt%3Dnone";
+    const DIRECT_AUTH_URL = "https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join";
 
     console.log('[*] 正在通过直达链接执行 Token 强制同步注入...');
     await page.goto(DIRECT_AUTH_URL, { waitUntil: 'domcontentloaded' });
