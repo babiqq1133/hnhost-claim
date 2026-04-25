@@ -31,7 +31,7 @@ async function sendTGReport(page, result) {
     const photoPath = `hnhost_report_${Date.now()}.png`;
     try {
         if (!page.isClosed()) {
-            await page.screenshot({ path: photoPath, fullPage: false });
+            await page.screenshot({ path: photoPath, fullPage: true });
         }
     } catch (e) {}
 
@@ -71,7 +71,7 @@ async function sendTGReport(page, result) {
     });
 }
 
-// ====================== 彻底修复版 Token 注入 ======================
+// ====================== Token 注入（保持原逻辑，稍微优化） ======================
 async function handleDiscordLoginWithToken(page, token) {
     console.log('[*] 正在通过直达链接执行 Token 强制同步注入...');
 
@@ -79,7 +79,6 @@ async function handleDiscordLoginWithToken(page, token) {
 
     const DIRECT_AUTH_URL = "https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join";
 
-    // 先等待页面完全加载
     await page.goto(DIRECT_AUTH_URL, { waitUntil: 'networkidle', timeout: 45000 });
     await page.waitForTimeout(8000);
 
@@ -88,16 +87,12 @@ async function handleDiscordLoginWithToken(page, token) {
     await page.evaluate((t) => {
         const injectToken = () => {
             try {
-                // 安全检查
                 if (typeof localStorage !== "undefined") {
-                    localStorage.setItem("token", JSON.stringify(t));
                     localStorage.setItem("token", `"${t}"`);
                 }
                 if (typeof sessionStorage !== "undefined") {
-                    sessionStorage.setItem("token", JSON.stringify(t));
+                    sessionStorage.setItem("token", `"${t}"`);
                 }
-
-                // 额外方式
                 window.token = t;
                 window.discordToken = t;
                 document.cookie = `token=${encodeURIComponent(t)}; path=/; max-age=3600`;
@@ -106,18 +101,14 @@ async function handleDiscordLoginWithToken(page, token) {
             }
         };
 
-        // 多轮注入
         injectToken();
         for (let i = 1; i <= 6; i++) {
             setTimeout(injectToken, i * 500);
         }
-
-        // 最后刷新
         setTimeout(() => location.reload(), 6000);
     }, token);
 
-    await page.waitForTimeout(18000); // 给足够时间让 Discord 处理 token 和跳转
-
+    await page.waitForTimeout(18000);
     console.log('✅ Token 注入阶段完成');
 }
 
@@ -150,40 +141,80 @@ test('HnHost 每日领取金币', async () => {
 
         await handleDiscordLoginWithToken(page, DISCORD_TOKEN);
 
-        console.log('🌐 跳转到 HnHost 首页...');
-        await page.goto('https://client.hnhost.net/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForTimeout(15000);
+        // === 关键修复：尝试进入控制面板 ===
+        console.log('🌐 跳转到 HnHost 控制面板...');
+        
+        const dashboardUrls = [
+            'https://client.hnhost.net/dashboard',
+            'https://client.hnhost.net/panel',
+            'https://client.hnhost.net/',
+        ];
 
-        // 如果页面要求手动登录 Discord，尝试点击
+        let entered = false;
+        for (const url of dashboardUrls) {
+            try {
+                await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+                await page.waitForTimeout(8000);
+                
+                // 等待动态加载完成
+                await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+                await page.waitForTimeout(5000);
+
+                // 滚动到底部，确保“其他操作”区域加载
+                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+                await page.waitForTimeout(3000);
+
+                entered = true;
+                console.log(`✅ 已进入页面: ${url}`);
+                break;
+            } catch (e) {
+                console.log(`⚠️ 跳转 ${url} 失败，尝试下一个...`);
+            }
+        }
+
+        if (!entered) {
+            throw new Error('无法进入控制面板');
+        }
+
+        // 如果有 Discord 登录按钮，点击
         const discordBtn = page.locator('button:has-text("Discord"), text=通过 Discord, text=登录').first();
-        if (await discordBtn.isVisible({ timeout: 8000 }).catch(() => false)) {
+        if (await discordBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
             console.log('🔗 点击 Discord 登录按钮...');
             await discordBtn.click();
-            await page.waitForTimeout(12000);
+            await page.waitForTimeout(10000);
         }
 
         console.log('🪙 检测领取奖励按钮...');
-        const claimButton = page.locator(`
-            button:has-text("领取奖励"),
-            button:has-text("領取獎勵"),
-            text=领取奖励,
-            text=领取每日登录奖励,
-            [class*="claim"], [class*="reward"]
-        `).first();
 
-        const isVisible = await claimButton.isVisible({ timeout: 25000 }).catch(() => false);
+        // 更可靠的选择器（推荐方式）
+        const claimButton = page.getByRole('button', { name: /领取奖励/i })
+            .or(page.locator('button:has-text("领取奖励")'))
+            .or(page.locator('text=领取奖励'))
+            .first();
+
+        // 等待按钮出现（最多25秒）
+        const isVisible = await claimButton.waitFor({ state: 'visible', timeout: 25000 })
+            .then(() => true)
+            .catch(() => false);
 
         if (isVisible) {
-            console.log('🎁 点击领取...');
+            console.log('🎁 找到领取奖励按钮，准备点击...');
             await claimButton.scrollIntoViewIfNeeded();
-            await claimButton.click({ delay: 1500 });
-            await page.waitForTimeout(12000);
+            await page.waitForTimeout(1000);
+            await claimButton.click({ delay: 800 });
 
-            const result = await page.locator('text=获得|成功|HN Points|金币|+10').first().innerText().catch(() => '领取完成');
-            status = `领取成功！ ${result}`;
+            await page.waitForTimeout(8000);
+
+            // 检查是否领取成功
+            const successText = await page.locator('text=获得|成功|HN Points|金币|+10|领取成功')
+                .first().innerText().catch(() => '领取完成');
+
+            status = `领取成功！ ${successText}`;
+            console.log(`✅ ${status}`);
         } else {
             await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true }).catch(() => {});
-            status = '未找到领取奖励按钮（可能今日已领取 或 Token 未生效）';
+            status = '未找到领取奖励按钮（可能今日已领取 或 页面加载不完整）';
+            console.log('❌ ' + status);
         }
 
         await sendTGReport(page, status);
