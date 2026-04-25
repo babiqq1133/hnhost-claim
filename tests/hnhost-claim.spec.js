@@ -6,7 +6,7 @@ const fs = require('fs');
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
 
-const TIMEOUT = 200000;   // 增加总超时，避免加载慢导致失败
+const TIMEOUT = 180000;
 
 function nowStr() {
     return new Date().toLocaleString('zh-CN', { 
@@ -71,9 +71,9 @@ async function sendTGReport(page, result) {
     });
 }
 
-// ==================== 登录函数 ====================
-async function handleDiscordLogin(page, discordToken) {
-    console.log('🔑 开始 Discord 登录流程...');
+// ==================== 按照别人流程的登录函数 ====================
+async function handleDiscordLogin(page) {
+    console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
 
     const authorizeUrl = "https://discord.com/oauth2/authorize?client_id=977981235618021377&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join";
 
@@ -83,21 +83,19 @@ async function handleDiscordLogin(page, discordToken) {
     console.log('⏳ 等待 OAuth2 回调...');
 
     try {
-        await page.waitForURL('**/discord.php?code=*', { timeout: 25000 });
-        console.log('✅ OAuth2 回调成功');
+        await page.waitForURL('**/discord.php?code=*', { timeout: 30000 });
+        console.log('✅ 拿到回调 URL');
     } catch (e) {
-        console.log('⚠️ 未检测到 code 回调，使用 Token 注入回退...');
-        await page.evaluate((t) => {
-            try {
-                if (typeof localStorage !== "undefined") localStorage.setItem("token", `"${t}"`);
-                document.cookie = `token=${encodeURIComponent(t)}; path=/; max-age=3600`;
-            } catch (err) {}
-        }, discordToken);
-        await page.reload({ waitUntil: 'networkidle' });
+        console.log('⚠️ 未检测到 code 回调，尝试补充处理...');
+        // 如果出现授权按钮，点击它
+        const authBtn = page.getByRole('button', { name: /Authorize|授权|同意/i }).first();
+        if (await authBtn.isVisible({ timeout: 10000 }).catch(() => false)) {
+            await authBtn.click();
+            await page.waitForTimeout(6000);
+        }
     }
 
     await page.waitForTimeout(5000);
-    await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 60000 });
     console.log('✅ 登录 Session 建立完成');
 }
 
@@ -107,7 +105,7 @@ test('HnHost 每日领取金币', async () => {
     if (!DISCORD_TOKEN) throw new Error('❌ 缺少 DISCORD_TOKEN 配置');
 
     const browser = await chromium.launch({
-        headless: true,
+        headless: true,        // 调试时改为 false
         proxy: process.env.GOST_PROXY ? { server: process.env.GOST_PROXY } : undefined,
     });
 
@@ -121,86 +119,44 @@ test('HnHost 每日领取金币', async () => {
         const res = await page.goto('https://api.ipify.org?format=json', { waitUntil: 'domcontentloaded' }).catch(() => null);
         if (res) console.log(`✅ 出口 IP 确认：${await res.text()}`);
 
-        await handleDiscordLogin(page, DISCORD_TOKEN);
+        await handleDiscordLogin(page);
 
-        // ==================== 关键加强：等待页面完全加载 ====================
-        console.log('🔄 返回主仪表盘并等待完全加载...');
-        await page.goto('https://client.hnhost.net/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-        
-        // 等待欢迎语（用户名 + 编号）出现，这是页面完全加载的重要标志
-        await page.waitForSelector('text=歡迎, text=欢迎', { timeout: 30000 }).catch(() => 
-            console.log('⚠️ 未检测到欢迎语，但继续执行')
-        );
-        
-        await page.waitForTimeout(10000);   // 额外等待动态模块加载
+        console.log('🔄 跳转到主仪表盘...');
+        await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle', timeout: 45000 });
+        await page.waitForTimeout(8000);
 
-        // 显示当前状态
-        const welcomeText = await page.locator('text=歡迎, text=欢迎').innerText().catch(() => '未知');
-        const currentGold = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
-        console.log(`👤 欢迎信息: ${welcomeText}`);
+        const currentGold = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
         console.log(`💰 当前金币: ${currentGold}`);
 
-        // ==================== 终极滚动策略 ====================
-        console.log('📜 执行多轮强制滚动到底部...');
-        for (let i = 0; i < 15; i++) {
-            await page.evaluate(() => {
-                window.scrollTo(0, document.body.scrollHeight);
-                // 滚动所有可能的可滚动容器
-                document.querySelectorAll('div, section, main, .container').forEach(el => {
-                    if (el.scrollHeight > el.clientHeight) {
-                        el.scrollTop = el.scrollHeight;
-                    }
-                });
-            });
-            await page.waitForTimeout(4500);
+        // 多轮滚动到底部
+        console.log('📜 多轮滚动到底部，确保按钮出现...');
+        for (let i = 0; i < 8; i++) {
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page.waitForTimeout(4000);
         }
 
-        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-        await page.waitForTimeout(5000);
+        console.log('🪙 检测领取奖励按钮...');
 
-        console.log('🪙 检测领取奖励按钮状态...');
+        // 简单可靠的按钮点击（参考别人成功风格）
+        const claimButton = page.locator('button').filter({ hasText: /领取奖励/i }).first();
+        
+        if (await claimButton.count() > 0) {
+            console.log('🎁 找到领取奖励按钮，点击...');
+            await claimButton.scrollIntoViewIfNeeded();
+            await page.waitForTimeout(2000);
+            await claimButton.click({ delay: 1000 });
 
-        // ==================== 终极 JS 点击（最强版） ====================
-        console.log('🔍 使用终极 JS 方式查找任何包含“领取”的按钮...');
+            await page.waitForTimeout(10000);
 
-        const clicked = await page.evaluate(() => {
-            window.scrollTo(0, document.body.scrollHeight);
-
-            const buttons = document.querySelectorAll('button, [role="button"], .btn, [class*="button"]');
-            for (let btn of buttons) {
-                const text = (btn.innerText || btn.textContent || '').trim();
-                if (text.includes('领取奖励') || 
-                    text.includes('领取每日') || 
-                    text.includes('领取') || 
-                    text.includes('签到') || 
-                    text.includes('登录奖励')) {
-                    console.log('✅ 找到按钮，文字为：', text);
-                    btn.scrollIntoView({ block: 'center' });
-                    setTimeout(() => btn.click(), 800);
-                    return true;
-                }
-            }
-            return false;
-        });
-
-        if (clicked) {
-            console.log('🖱️ 已通过 JS 点击「领取奖励」按钮...');
-            await page.waitForTimeout(12000);
-
-            const newGold = await page.locator('text=HN POINTS, text=HNRC, text=金币').locator('..').innerText().catch(() => '未知');
+            const newGold = await page.locator('text=HN POINTS, text=HNRC').locator('..').innerText().catch(() => '未知');
             console.log(`🏆 最新金币: ${newGold}`);
 
             status = '领取成功！ +10 HNRC';
-            console.log(`🎉 ${status}`);
-            await page.screenshot({ path: `hnhost_claim_success_${Date.now()}.png`, fullPage: true });
+            console.log(`✅ ${status}`);
         } else {
             await page.screenshot({ path: `hnhost_debug_${Date.now()}.png`, fullPage: true });
             console.log('💾 已保存调试截图 hnhost_debug_*.png');
-
-            const bottomText = await page.evaluate(() => document.body.innerText.slice(-6000)).catch(() => '无法获取');
-            console.log('页面底部部分内容：\n', bottomText);
-
-            status = '未找到领取奖励按钮（可能今日已领取或页面加载不完整）';
+            status = '未找到领取奖励按钮（可能今日已领取）';
             console.log('❌ ' + status);
         }
 
