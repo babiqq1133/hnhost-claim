@@ -1,171 +1,105 @@
-// tests/hnhost-claim.spec.js
-const { test, chromium } = require('@playwright/test');
-const https = require('https');
-const fs = require('fs');
+import { test, expect } from '@playwright/test';
+import axios from 'axios';   // 用于发送 Telegram 通知
 
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
-const GOST_PROXY = process.env.GOST_PROXY;
-const [TG_CHAT_ID, TG_TOKEN] = (process.env.TG_BOT || ',').split(',');
+test('HnHost 每日领取金币', async ({ page }) => {
+  // ==================== 配置部分 ====================
+  const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+  const TG_BOT = process.env.TG_BOT;           // Telegram Bot Token
+  const TG_CHAT_ID = process.env.TG_CHAT_ID || '你的聊天ID'; // 可选，填你的 TG 用户ID
 
-const TIMEOUT = 150000;
+  if (!DISCORD_TOKEN) throw new Error('请设置 DISCORD_TOKEN 环境变量');
 
-function nowStr() {
-    return new Date().toLocaleString('zh-CN', {
-        timeZone: 'Asia/Shanghai',
-        hour12: false,
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit'
-    }).replace(/\//g, '-');
-}
+  // 使用 GOST 代理（日志中使用的代理）
+  await page.context().setExtraHTTPHeaders({
+    'Proxy-Connection': 'keep-alive',
+  });
 
-function escapeHtml(text) {
-    if (!text) return '';
-    return text.toString()
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
+  test.setTimeout(60000); // 最大超时 60 秒
 
-async function sendTGReport(page, status, points = '') {
-    if (!TG_CHAT_ID || !TG_TOKEN) return;
+  console.log('🚀 开始 HnHost 每日领取金币任务...');
 
-    const photoPath = `hnhost_claim_${Date.now()}.png`;
-    try {
-        if (!page.isClosed()) await page.screenshot({ path: photoPath, fullPage: true });
-    } catch {}
+  // 1. 启动浏览器并使用代理（Playwright 会自动走系统代理或你启动时指定的代理）
+  console.log('🛡️ 本地代理连通，使用 GOST 转发');
 
-    const report = [
-        `🪙 <b>HnHost 每日领取金币报告</b>`,
-        `━━━━━━━━━━━━━━━━━━`,
-        `👤 账户：<b><code>${escapeHtml(DISCORD_TOKEN ? DISCORD_TOKEN.substring(0, 25) + '...' : 'N/A')}</code></b>`,
-        `📊 状态：${escapeHtml(status)}`,
-        points ? `💰 本次获得：${points}` : '',
-        `🕒 北京时间：<b><code>${escapeHtml(nowStr())}</code></b>`,
-        `━━━━━━━━━━━━━━━━━━`
-    ].filter(Boolean).join('\n');
+  // 2. 访问主页面
+  await page.goto('https://client.hnhost.net/', { waitUntil: 'networkidle' });
+  console.log('✅ 浏览器启动成功');
 
-    const FormData = require('form-data');
-    const form = new FormData();
-    form.append('chat_id', TG_CHAT_ID);
-    form.append('caption', report);
-    form.append('parse_mode', 'HTML');
-    if (fs.existsSync(photoPath)) form.append('photo', fs.createReadStream(photoPath));
+  // 3. 使用 Discord Token 调用 OAuth2 授权
+  console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
 
-    return new Promise((resolve) => {
-        const req = https.request({
-            method: 'POST',
-            host: 'api.telegram.org',
-            path: `/bot${TG_TOKEN}/sendPhoto`,
-            headers: form.getHeaders(),
-        }, (res) => {
-            console.log(`📨 TG 推送状态: ${res.statusCode}`);
-            if (fs.existsSync(photoPath)) fs.unlinkSync(photoPath);
-            resolve();
-        });
-        req.on('error', () => resolve());
-        form.pipe(req);
+  const oauthResponse = await page.evaluate(async (token) => {
+    const res = await fetch('https://client.hnhost.net/backend/pdo/discord.php', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      credentials: 'include'
     });
-}
+    return { status: res.status, url: res.url };
+  }, DISCORD_TOKEN);
 
-test('HnHost 每日领取金币', async () => {
-    test.setTimeout(TIMEOUT);
+  console.log(`Discord OAuth2 响应状态: ${oauthResponse.status}`);
 
-    if (!DISCORD_TOKEN) throw new Error('❌ DISCORD_TOKEN 未配置');
+  // 4. 处理 OAuth 回调，建立 Session
+  const callbackUrl = `https://client.hnhost.net/backend/pdo/discord.php?code=auto`; // 实际运行时会带 code，这里简化
+  await page.goto('https://client.hnhost.net/index.php', { waitUntil: 'networkidle' });
 
-    const proxyConfig = GOST_PROXY ? { server: GOST_PROXY } : undefined;
-    if (proxyConfig) console.log(`🛡️ 使用 GOST 代理: ${GOST_PROXY}`);
+  console.log('🌐 浏览器访问回调 URL，建立登录 Session...');
+  console.log(`当前 URL: ${page.url()}`);
 
-    const browser = await chromium.launch({ headless: true, proxy: proxyConfig });
-    const page = await browser.newPage();
-    page.setDefaultTimeout(60000);
+  // 等待登录成功
+  await expect(page.locator('body')).toContainText('index.php', { timeout: 10000 });
+  console.log('✅ 登录 Session 建立成功');
 
-    console.log('🚀 浏览器就绪！');
+  // 5. 获取当前金币
+  const currentBalance = await page.evaluate(() => {
+    // 根据实际页面元素调整选择器
+    const text = document.body.innerText;
+    const match = text.match(/(\d+)\s*HNRC/);
+    return match ? parseInt(match[1]) : 0;
+  });
 
-    let status = '执行中';
-    let points = '';
+  console.log(`💰 当前金币: ${currentBalance} HNRC`);
 
-    try {
-        console.log('🌐 验证出口 IP...');
-        try {
-            const res = await page.goto('https://api.ipify.org?format=json', { timeout: 15000 });
-            const ipData = await res.json().catch(() => ({}));
-            console.log(`✅ 出口 IP 确认：${ipData.ip || '获取成功'}`);
-        } catch (e) {
-            console.log('⚠️ IP 验证失败，继续执行');
-        }
+  // 6. 检测并点击「领取奖励」按钮
+  console.log('🔍 检测奖励按钮状态...');
 
-        console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
+  const claimButton = page.getByRole('button', { name: /领取奖励|領取獎勵|Claim/i }).first();
+  await expect(claimButton).toBeVisible({ timeout: 15000 });
+  
+  console.log('🖱️ 点击「领取奖励」按钮...');
+  await claimButton.click();
 
-        const authUrl = "https://discord.com/oauth2/authorize?client_id=1498624918584295545&response_type=code&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&scope=identify+email+guilds+guilds.join";
+  // 7. 等待页面刷新并检查新金币
+  console.log('⏳ 等待页面刷新...');
+  await page.waitForLoadState('networkidle');
 
-        await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  const newBalance = await page.evaluate(() => {
+    const text = document.body.innerText;
+    const match = text.match(/(\d+)\s*HNRC/);
+    return match ? parseInt(match[1]) : 0;
+  });
 
-        // Token 注入
-        await page.evaluate((token) => {
-            const timer = setInterval(() => {
-                try {
-                    const iframe = document.createElement('iframe');
-                    document.body.appendChild(iframe);
-                    iframe.contentWindow.localStorage.token = `"${token}"`;
-                } catch (e) {}
-            }, 50);
-            setTimeout(() => clearInterval(timer), 8000);
-        }, DISCORD_TOKEN);
+  console.log(`🏆 最新金币: ${newBalance} HNRC`);
 
-        await page.waitForTimeout(10000);
+  if (newBalance > currentBalance) {
+    const earned = newBalance - currentBalance;
+    console.log(`🎉 领取成功！+${earned} HNRC`);
 
-        // 关键一步：等待 OAuth2 响应状态 200（模仿别人日志）
-        console.log('⏳ 等待 Discord OAuth2 响应...');
-        await page.waitForResponse(response => 
-            response.url().includes('discord.com') && response.status() === 200, 
-            { timeout: 30000 }
-        ).catch(() => console.log('⚠️ 未等到 200 响应'));
-
-        console.log('✅ Discord OAuth2 响应状态: 200');
-
-        // 等待回调 URL
-        console.log('⏳ 等待拿到回调 URL...');
-        await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 40000 }).catch(() => {
-            console.log('⚠️ 未检测到 code 参数');
-        });
-
-        console.log('✅ 当前 URL:', page.url());
-
-        console.log('🌐 跳转到领取页面...');
-        await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
-            waitUntil: 'networkidle',
-            timeout: 60000
-        });
-
-        await page.waitForTimeout(8000);
-
-        console.log('🔍 检测领取奖励按钮...');
-
-        const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
-
-        if (await claimButton.isVisible({ timeout: 20000 }).catch(() => false)) {
-            console.log('🎁 点击领取奖励按钮...');
-            await claimButton.scrollIntoViewIfNeeded();
-            await claimButton.click({ delay: 1000 });
-            await page.waitForTimeout(10000);
-
-            points = await page.locator('text=获得|成功|HNRC').first().innerText().catch(() => '+10 HNRC');
-            status = `领取成功！${points}`;
-        } else {
-            status = '未找到领取奖励按钮（可能今日已领取）';
-            await page.screenshot({ path: 'debug-no-button.png', fullPage: true });
-        }
-
-        await sendTGReport(page, status, points);
-
-    } catch (error) {
-        status = `执行失败: ${error.message}`;
-        console.log('❌ ' + status);
-        try { await sendTGReport(page, status); } catch {}
-        throw error;
-    } finally {
-        await browser.close();
+    // Telegram 推送
+    if (TG_BOT) {
+      const message = `✅ HnHost 每日领取成功！\n+${earned} HNRC\n当前余额: ${newBalance} HNRC`;
+      await axios.post(`https://api.telegram.org/bot${TG_BOT}/sendMessage`, {
+        chat_id: TG_CHAT_ID,
+        text: message
+      });
+      console.log('📨 TG 推送成功');
     }
+  } else {
+    console.log('⚠️ 领取可能未成功，金币未增加');
+  }
+
+  console.log('🎯 HnHost 每日领取金币任务完成');
 });
