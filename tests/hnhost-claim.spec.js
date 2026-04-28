@@ -2,7 +2,6 @@
 const { test, chromium } = require('@playwright/test');
 const https = require('https');
 const fs = require('fs');
-const { URL } = require('url');
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const GOST_PROXY = process.env.GOST_PROXY;
@@ -35,7 +34,7 @@ async function sendTGReport(page, status, points = '') {
     const photoPath = `hnhost_claim_${Date.now()}.png`;
     try {
         if (!page.isClosed()) await page.screenshot({ path: photoPath, fullPage: true });
-    } catch (e) {}
+    } catch {}
 
     const report = [
         `🪙 <b>HnHost 每日领取金币报告</b>`,
@@ -72,6 +71,7 @@ async function sendTGReport(page, status, points = '') {
 
 test('HnHost 每日领取金币', async () => {
     test.setTimeout(TIMEOUT);
+
     if (!DISCORD_TOKEN) throw new Error('❌ DISCORD_TOKEN 未配置');
 
     const proxyConfig = GOST_PROXY ? { server: GOST_PROXY } : undefined;
@@ -79,7 +79,7 @@ test('HnHost 每日领取金币', async () => {
 
     const browser = await chromium.launch({ headless: true, proxy: proxyConfig });
     const page = await browser.newPage();
-    page.setDefaultTimeout(90000);
+    page.setDefaultTimeout(60000);
 
     console.log('🚀 浏览器就绪！');
 
@@ -87,54 +87,52 @@ test('HnHost 每日领取金币', async () => {
     let points = '';
 
     try {
+        console.log('🌐 验证出口 IP...');
+        try {
+            const res = await page.goto('https://api.ipify.org?format=json', { timeout: 15000 });
+            const ipData = await res.json().catch(() => ({}));
+            console.log(`✅ 出口 IP 确认：${ipData.ip || '获取成功'}`);
+        } catch (e) {
+            console.log('⚠️ IP 验证失败，继续执行');
+        }
+
         console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
 
-        const clientId = '1498565188511596554';
-        const authUrl = `https://discord.com/oauth2/authorize?client_id=1498565188511596554&response_type=code&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&scope=identify+email+guilds+guilds.join`;
+        const authUrl = "https://discord.com/login?redirect_to=%2Foauth2%2Fauthorize%3Fscope%3Dguilds%2Bguilds.join%2Bidentify%2Bemail%26client_id%3D933437142254887052%26redirect_uri%3Dhttps%253A%252F%252Fclient.hnhost.net%252Flogin%26response_type%3Dcode%26prompt%3Dnone";
 
         await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-        // 改进后的 Token 注入（等待页面加载后再注入）
-        console.log('🔧 注入 Discord Token...');
-        await page.waitForLoadState('domcontentloaded');
-        await page.waitForTimeout(3000);
-
+        // Token 注入
         await page.evaluate((token) => {
-            // 安全注入
-            if (typeof localStorage !== 'undefined') {
-                localStorage.setItem('token', `"${token}"`);
-                console.log('localStorage injected');
-            }
-            window.token = token;
-            window.__DISCORD_TOKEN__ = token;
-        }, DISCORD_TOKEN).catch(err => {
-            console.log('注入时出现警告:', err.message);
-        });
+            const timer = setInterval(() => {
+                try {
+                    const iframe = document.createElement('iframe');
+                    document.body.appendChild(iframe);
+                    iframe.contentWindow.localStorage.token = `"${token}"`;
+                } catch (e) {}
+            }, 50);
+            setTimeout(() => clearInterval(timer), 8000);
+        }, DISCORD_TOKEN);
 
-        await page.waitForTimeout(8000);
+        await page.waitForTimeout(10000);
 
+        // 关键一步：等待 OAuth2 响应状态 200（模仿别人日志）
         console.log('⏳ 等待 Discord OAuth2 响应...');
-        await page.waitForResponse(r => r.url().includes('discord.com') && r.status() === 200, { timeout: 40000 })
-            .catch(() => console.log('⚠️ 未等到 200 响应'));
+        await page.waitForResponse(response => 
+            response.url().includes('discord.com') && response.status() === 200, 
+            { timeout: 30000 }
+        ).catch(() => console.log('⚠️ 未等到 200 响应'));
 
         console.log('✅ Discord OAuth2 响应状态: 200');
 
         // 等待回调 URL
         console.log('⏳ 等待拿到回调 URL...');
-        await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 45000 }).catch(() => {
+        await page.waitForURL(/backend\/pdo\/discord\.php\?code=/, { timeout: 40000 }).catch(() => {
             console.log('⚠️ 未检测到 code 参数');
         });
 
-        const callbackUrl = page.url();
-        console.log('✅ 拿到回调 URL:', callbackUrl);
+        console.log('✅ 当前 URL:', page.url());
 
-        // 访问回调 URL 建立 Session
-        console.log('🌐 浏览器访问回调 URL，建立登录 Session...');
-        await page.goto(callbackUrl, { waitUntil: 'networkidle', timeout: 60000 });
-
-        console.log('✅ 登录 Session 建立成功');
-
-        // 领取金币
         console.log('🌐 跳转到领取页面...');
         await page.goto('https://client.hnhost.net/index.php?server_event=renew_fail&pt=pterodactyl', {
             waitUntil: 'networkidle',
@@ -142,6 +140,8 @@ test('HnHost 每日领取金币', async () => {
         });
 
         await page.waitForTimeout(8000);
+
+        console.log('🔍 检测领取奖励按钮...');
 
         const claimButton = page.locator('button:has-text("领取奖励"), text=领取奖励').first();
 
@@ -155,6 +155,7 @@ test('HnHost 每日领取金币', async () => {
             status = `领取成功！${points}`;
         } else {
             status = '未找到领取奖励按钮（可能今日已领取）';
+            await page.screenshot({ path: 'debug-no-button.png', fullPage: true });
         }
 
         await sendTGReport(page, status, points);
