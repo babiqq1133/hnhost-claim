@@ -89,8 +89,8 @@ test('HnHost 每日领取金币', async () => {
     try {
         console.log('🔑 使用 Discord Token 调用 OAuth2 授权接口...');
 
-        const clientId = '1497635385562628296';
-        const authUrl = `https://discord.com/oauth2/authorize?client_id=${clientId}&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&response_type=code&scope=identify+email+guilds+guilds.join`;
+        const clientId = '1498565188511596554';
+        const authUrl = `https://discord.com/oauth2/authorize?client_id=1498565188511596554&response_type=code&redirect_uri=https%3A%2F%2Fclient.hnhost.net%2Fbackend%2Fpdo%2Fdiscord.php&scope=identify+email+guilds+guilds.join`;
 
         await page.goto(authUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
